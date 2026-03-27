@@ -22,7 +22,7 @@ for key in ["http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY", "all_proxy
 os.environ["no_proxy"] = "*"
 _opener = build_opener(ProxyHandler({}))
 
-from config import ILINK_STATE_FILE, TIMEZONE, HUNGER_DECAY_INTERVAL_MIN
+from config import ILINK_STATE_FILE, TIMEZONE, DECAY_INTERVAL_MIN
 
 BASE_URL = "https://ilinkai.weixin.qq.com"
 
@@ -57,6 +57,9 @@ def _api_request(method, path, body=None, headers=None, timeout=10):
         print(f"  HTTP {e.code}: {body_text[:200]}")
         return {"error": e.code}
     except (URLError, socket.timeout, TimeoutError):
+        return {"timeout": True}
+    except (ConnectionError, OSError, KeyboardInterrupt) as e:
+        print(f"  连接中断: {type(e).__name__}")
         return {"timeout": True}
 
 
@@ -272,8 +275,8 @@ def start():
     scheduler.start()
     atexit.register(lambda: scheduler.shutdown(wait=False))
 
-    print(f"\n=== 017Pet 已启动 ===")
-    print(f"  饥饿衰减: 每{HUNGER_DECAY_INTERVAL_MIN}分钟")
+    print(f"\n=== 017Pet 已启动 (Phase 2) ===")
+    print(f"  状态衰减: 每{DECAY_INTERVAL_MIN}分钟")
     print(f"  调度器: APScheduler")
 
     def on_message(user_id, text, is_voice):

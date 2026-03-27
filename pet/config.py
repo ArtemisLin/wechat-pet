@@ -63,6 +63,27 @@ HUNGER_DECAY_INTERVAL_MIN = int(os.environ.get("HUNGER_DECAY_INTERVAL_MIN", "30"
 HUNGER_ALERT_THRESHOLD = int(os.environ.get("HUNGER_ALERT_THRESHOLD", "20"))
 FEED_AMOUNT = int(os.environ.get("FEED_AMOUNT", "30"))
 
+# === 多属性参数 ===
+STAT_CONFIG = {
+    "hunger":      {"decay_rate": 5, "restore_amount": 30, "alert_threshold": 20, "tick_mod": 2},  # 30min
+    "cleanliness": {"decay_rate": 3, "restore_amount": 35, "alert_threshold": 20, "tick_mod": 4},  # 60min
+    "mood":        {"decay_rate": 4, "restore_amount": 40, "alert_threshold": 20, "tick_mod": 3},  # 45min
+    "stamina":     {"regen_rate": 3, "restore_amount": 100, "alert_threshold": 15, "tick_mod": 2}, # 30min
+}
+PLAY_STAMINA_COST = 15
+HEALTH_DECAY_RATE = 5
+HEALTH_RESTORE_AMOUNT = 40
+DECAY_INTERVAL_MIN = 15  # scheduler 间隔（各属性 GCD）
+
+# === 经验值 ===
+XP_REWARDS = {"feed": 5, "bathe": 3, "play": 8, "sleep": 2, "heal": 2}
+GROWTH_STAGES = [
+    (0,    "baby",  "宝宝"),
+    (100,  "child", "幼年"),
+    (500,  "teen",  "少年"),
+    (2000, "adult", "成年"),
+]
+
 # === 文件路径 ===
 PET_DATA_FILE = str(BASE_DIR / "pet_data.json")
 ILINK_STATE_FILE = str(BASE_DIR / "ilink_state.json")
