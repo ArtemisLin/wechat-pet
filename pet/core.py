@@ -904,13 +904,14 @@ class MessageHandler:
             result = parse_message(text, pet_context, history=self.store.chat_history)
             if result and result.get("reply"):
                 reply_text = result["reply"]
+                # AI 闲聊不发图片，只有明确操作才发
                 # 记录对话历史
                 self.store.chat_history.append({"role": "user", "content": text})
                 self.store.chat_history.append({"role": "assistant", "content": reply_text})
                 if len(self.store.chat_history) > 40:
                     self.store.chat_history = self.store.chat_history[-40:]
                 self.store._save()
-                return (reply_text, "idle")
+                return reply_text
         except Exception as e:
             print(f"  AI 调用失败: {e}")
 
