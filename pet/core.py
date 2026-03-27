@@ -11,7 +11,7 @@ from config import (
     PET_DATA_FILE, now_str, today_str, now,
     HUNGER_DECAY_RATE, HUNGER_ALERT_THRESHOLD, FEED_AMOUNT,
     STAT_CONFIG, PLAY_STAMINA_COST, HEALTH_DECAY_RATE, HEALTH_RESTORE_AMOUNT,
-    XP_REWARDS, GROWTH_STAGES, SLEEP_DURATION_MIN,
+    XP_REWARDS, GROWTH_STAGES, SLEEP_DURATION_MIN, EXPLORE_DURATION_MIN,
 )
 
 SCHEMA_VERSION = 2
@@ -203,6 +203,67 @@ class PetStore:
         from config import TZ
         wake_time = datetime.strptime(self.pet["sleep_until"], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=TZ)
         remaining = (wake_time - now()).total_seconds() / 60
+        return max(0, int(remaining))
+
+    # --- 探险 ---
+
+    EXPLORE_LOCATIONS = ["海边", "森林", "山顶", "小镇集市", "花园", "湖边", "雪山", "沙漠绿洲", "古老图书馆", "神秘洞穴"]
+
+    def start_explore(self):
+        """出发探险，返回 (location, explore_until) 或 None 或 "no_stamina" 或 "busy" """
+        if not self.pet or self.pet["stage"] == "egg":
+            return None
+        if self.pet.get("is_sleeping"):
+            return "sleeping"
+        if self.pet.get("is_exploring"):
+            return "already_exploring"
+        if self.pet.get("stamina", 0) < 20:
+            return "no_stamina"
+        from datetime import timedelta
+        location = random.choice(self.EXPLORE_LOCATIONS)
+        return_time = now() + timedelta(minutes=EXPLORE_DURATION_MIN)
+        self.pet["is_exploring"] = True
+        self.pet["explore_until"] = return_time.strftime("%Y-%m-%dT%H:%M:%S")
+        self.pet["explore_location"] = location
+        self.pet["stamina"] = max(0, self.pet["stamina"] - 20)
+        self._add_xp("explore")
+        self._add_history("explore_start", {"location": location})
+        self._save()
+        return (location, self.pet["explore_until"])
+
+    def finish_explore(self):
+        """探险结束，返回 location 或 None"""
+        if not self.pet or not self.pet.get("is_exploring"):
+            return None
+        location = self.pet.get("explore_location", "未知之地")
+        self.pet["is_exploring"] = False
+        self.pet["explore_until"] = None
+        self.pet["explore_location"] = None
+        self.pet["mood"] = min(100, self.pet.get("mood", 50) + 15)  # 探险回来心情变好
+        self._add_history("explore_end", {"location": location})
+        self._save()
+        return location
+
+    def is_exploring(self):
+        """检查是否在探险，到时间自动返回"""
+        if not self.pet or not self.pet.get("is_exploring"):
+            return False
+        explore_until = self.pet.get("explore_until")
+        if explore_until:
+            from datetime import datetime
+            from config import TZ
+            return_time = datetime.strptime(explore_until, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=TZ)
+            if now() >= return_time:
+                return False  # 到时间了，但不自动 finish（由 scheduler 处理）
+        return True
+
+    def explore_remaining_min(self):
+        if not self.pet or not self.pet.get("explore_until"):
+            return 0
+        from datetime import datetime
+        from config import TZ
+        return_time = datetime.strptime(self.pet["explore_until"], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=TZ)
+        remaining = (return_time - now()).total_seconds() / 60
         return max(0, int(remaining))
 
     def heal(self):
@@ -453,14 +514,19 @@ def _rule_route(text):
     if text in ("喂",):
         return {"action": "feed"}
 
+    # 探险（必须在玩耍之前，否则"出去玩"会匹配到玩耍）
+    for kw in ("探险", "出去玩", "去冒险", "出门逛", "去探索", "出去逛逛"):
+        if kw in text:
+            return {"action": "explore"}
+
     for kw in ("洗澡", "洗洗", "洗个澡", "清洁"):
         if kw in text:
             return {"action": "bathe"}
 
-    for kw in ("玩耍", "陪玩", "玩游戏", "逗乐", "去玩", "陪我玩"):
+    for kw in ("玩耍", "陪玩", "玩游戏", "逗乐", "陪我玩"):
         if kw in text:
             return {"action": "play"}
-    if text in ("玩",):
+    if text in ("玩", "去玩"):
         return {"action": "play"}
 
     for kw in ("睡觉", "休息", "去睡"):
@@ -505,6 +571,12 @@ class MessageHandler:
             remaining = self.store.sleep_remaining_min()
             name = self.store.pet.get("name", "小企鹅")
             return (f"{name}正在睡觉呢 (\u02d8\u03c9\u02d8) zzZ\n还要 {remaining} 分钟才醒哦~\n轻点，别吵醒宝宝~", "sleeping")
+        # 探险状态检查
+        if self.store.is_exploring():
+            remaining = self.store.explore_remaining_min()
+            name = self.store.pet.get("name", "小企鹅")
+            location = self.store.pet.get("explore_location", "外面")
+            return f"{name}正在{location}探险呢~ \u2728\n还有 {remaining} 分钟回来，等我带礼物哦！"
         return self._handle_normal(user_id, text)
 
     def _handle_no_pet(self, user_id, text):
@@ -579,6 +651,20 @@ class MessageHandler:
                 if result is None:
                     return "宠物还在蛋里呢~"
                 return (_heal_reply(result[0], result[1], name), "healing")
+
+            if action == "explore":
+                result = self.store.start_explore()
+                if result is None:
+                    return "宠物还在蛋里呢~"
+                if result == "sleeping":
+                    return f"{name}在睡觉呢，醒了再出去吧~"
+                if result == "already_exploring":
+                    remaining = self.store.explore_remaining_min()
+                    return f"{name}已经在外面探险了~ 还有 {remaining} 分钟回来"
+                if result == "no_stamina":
+                    return (_no_stamina_reply(name, pet.get("stamina", 0)), "tired")
+                location, until = result
+                return f"{name}背上小书包，向{location}出发了！\u2728\n{EXPLORE_DURATION_MIN}分钟后回来，会带故事回来哦~"
 
             if action == "status":
                 return format_status(pet)

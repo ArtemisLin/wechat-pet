@@ -78,7 +78,7 @@ SLEEP_DURATION_MIN = 30  # 睡眠持续时间（分钟）
 EXPLORE_DURATION_MIN = 30  # 探险持续时间（分钟）
 
 # === 经验值 ===
-XP_REWARDS = {"feed": 5, "bathe": 3, "play": 8, "sleep": 2, "heal": 2}
+XP_REWARDS = {"feed": 5, "bathe": 3, "play": 8, "sleep": 2, "heal": 2, "explore": 10}
 GROWTH_STAGES = [
     (0,    "baby",  "宝宝"),
     (100,  "child", "幼年"),
