@@ -14,7 +14,35 @@ from config import (
     XP_REWARDS, GROWTH_STAGES, SLEEP_DURATION_MIN, EXPLORE_DURATION_MIN,
 )
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
+
+# ============================================================
+# 成就定义
+# ============================================================
+ACHIEVEMENTS = {
+    # 养成
+    "first_feed":    {"name": "第一口饭",  "desc": "首次喂食", "xp": 10, "cat": "养成"},
+    "first_bathe":   {"name": "干干净净",  "desc": "首次洗澡", "xp": 10, "cat": "养成"},
+    "first_play":    {"name": "快乐时光",  "desc": "首次玩耍", "xp": 10, "cat": "养成"},
+    "first_sleep":   {"name": "美梦成真",  "desc": "首次睡觉", "xp": 10, "cat": "养成"},
+    "first_heal":    {"name": "妙手回春",  "desc": "首次治疗", "xp": 10, "cat": "养成"},
+    "feed_50":       {"name": "吃货达人",  "desc": "累计喂食50次", "xp": 30, "cat": "养成"},
+    "streak_3":      {"name": "每日坚持",  "desc": "连续3天互动", "xp": 20, "cat": "养成"},
+    "streak_7":      {"name": "一周陪伴",  "desc": "连续7天互动", "xp": 50, "cat": "养成"},
+    # 成长
+    "level_2":       {"name": "初出茅庐",  "desc": "升到Lv.2", "xp": 20, "cat": "成长"},
+    "level_3":       {"name": "少年出道",  "desc": "升到Lv.3", "xp": 30, "cat": "成长"},
+    "level_4":       {"name": "成年礼",   "desc": "升到Lv.4", "xp": 50, "cat": "成长"},
+    # 探险
+    "first_explore": {"name": "第一次远行", "desc": "首次探险", "xp": 15, "cat": "探险"},
+    "explore_10":    {"name": "环游世界",  "desc": "探险10次", "xp": 40, "cat": "探险"},
+    "explore_5loc":  {"name": "收藏家",   "desc": "探索5个不同地点", "xp": 30, "cat": "探险"},
+    # 特殊
+    "all_max":       {"name": "满血状态",  "desc": "所有属性>90", "xp": 20, "cat": "特殊"},
+    "revive":        {"name": "绝处逢生",  "desc": "健康从<10恢复到>80", "xp": 25, "cat": "特殊"},
+    "chatty":        {"name": "话唠",     "desc": "单日发送20条消息", "xp": 15, "cat": "特殊"},
+    "night_owl":     {"name": "夜猫子",   "desc": "凌晨2-4点互动", "xp": 10, "cat": "特殊"},
+}
 
 
 # ============================================================
@@ -57,6 +85,13 @@ class PetStore:
             "_decay_tick": 0,
             "is_sleeping": False, "sleep_until": None,
             "is_exploring": False, "explore_until": None, "explore_location": None,
+            "achievements": {}, "stats": {
+                "total_feeds": 0, "total_baths": 0, "total_plays": 0,
+                "total_sleeps": 0, "total_heals": 0, "total_explores": 0,
+                "explore_locations": [], "consecutive_days": 0,
+                "last_active_date": None, "daily_messages": 0,
+                "daily_messages_date": None,
+            },
         }
         changed = False
         for key, default in defaults.items():
@@ -357,6 +392,162 @@ class PetStore:
         if len(self.history) > 100:
             self.history = self.history[-100:]
 
+    # --- 成就系统 ---
+
+    def _get_stats(self):
+        return self.pet.setdefault("stats", {
+            "total_feeds": 0, "total_baths": 0, "total_plays": 0,
+            "total_sleeps": 0, "total_heals": 0, "total_explores": 0,
+            "explore_locations": [], "consecutive_days": 0,
+            "last_active_date": None, "daily_messages": 0,
+            "daily_messages_date": None,
+        })
+
+    def _get_achievements(self):
+        return self.pet.setdefault("achievements", {})
+
+    def _unlock(self, ach_id):
+        """解锁成就，返回成就信息 dict 或 None（已解锁）"""
+        achs = self._get_achievements()
+        if ach_id in achs:
+            return None
+        if ach_id not in ACHIEVEMENTS:
+            return None
+        achs[ach_id] = now_str()
+        ach = ACHIEVEMENTS[ach_id]
+        self.pet["xp"] = self.pet.get("xp", 0) + ach["xp"]
+        self._add_history("achievement", {"id": ach_id, "name": ach["name"]})
+        return ach
+
+    def record_action(self, action):
+        """记录操作统计+检查成就，返回新解锁的成就列表"""
+        stats = self._get_stats()
+        unlocked = []
+
+        # 更新每日活跃
+        today = today_str()
+        if stats.get("last_active_date") != today:
+            if stats.get("last_active_date"):
+                from datetime import datetime, timedelta
+                from config import parse_date
+                last = parse_date(stats["last_active_date"])
+                if last and (parse_date(today) - last).days == 1:
+                    stats["consecutive_days"] = stats.get("consecutive_days", 0) + 1
+                else:
+                    stats["consecutive_days"] = 1
+            else:
+                stats["consecutive_days"] = 1
+            stats["last_active_date"] = today
+            stats["daily_messages"] = 0
+            stats["daily_messages_date"] = today
+
+        stats["daily_messages"] = stats.get("daily_messages", 0) + 1
+
+        # 操作计数
+        count_map = {
+            "feed": "total_feeds", "bathe": "total_baths", "play": "total_plays",
+            "sleep": "total_sleeps", "heal": "total_heals", "explore": "total_explores",
+        }
+        if action in count_map:
+            stats[count_map[action]] = stats.get(count_map[action], 0) + 1
+
+        # 首次成就
+        first_map = {
+            "feed": "first_feed", "bathe": "first_bathe", "play": "first_play",
+            "sleep": "first_sleep", "heal": "first_heal", "explore": "first_explore",
+        }
+        if action in first_map:
+            ach = self._unlock(first_map[action])
+            if ach:
+                unlocked.append(ach)
+
+        # 累计成就
+        if stats.get("total_feeds", 0) >= 50:
+            ach = self._unlock("feed_50")
+            if ach: unlocked.append(ach)
+        if stats.get("total_explores", 0) >= 10:
+            ach = self._unlock("explore_10")
+            if ach: unlocked.append(ach)
+
+        # 连续天数
+        if stats.get("consecutive_days", 0) >= 3:
+            ach = self._unlock("streak_3")
+            if ach: unlocked.append(ach)
+        if stats.get("consecutive_days", 0) >= 7:
+            ach = self._unlock("streak_7")
+            if ach: unlocked.append(ach)
+
+        # 等级成就
+        level = self.pet.get("level", 1)
+        if level >= 2:
+            ach = self._unlock("level_2")
+            if ach: unlocked.append(ach)
+        if level >= 3:
+            ach = self._unlock("level_3")
+            if ach: unlocked.append(ach)
+        if level >= 4:
+            ach = self._unlock("level_4")
+            if ach: unlocked.append(ach)
+
+        # 探险地点
+        if action == "explore" and self.pet.get("explore_location"):
+            locs = stats.setdefault("explore_locations", [])
+            loc = self.pet["explore_location"]
+            if loc not in locs:
+                locs.append(loc)
+            if len(locs) >= 5:
+                ach = self._unlock("explore_5loc")
+                if ach: unlocked.append(ach)
+
+        # 特殊成就
+        if all(self.pet.get(s, 0) > 90 for s in ("hunger", "cleanliness", "mood", "stamina", "health")):
+            ach = self._unlock("all_max")
+            if ach: unlocked.append(ach)
+
+        if stats.get("daily_messages", 0) >= 20:
+            ach = self._unlock("chatty")
+            if ach: unlocked.append(ach)
+
+        hour = now().hour
+        if 2 <= hour < 4:
+            ach = self._unlock("night_owl")
+            if ach: unlocked.append(ach)
+
+        self._save()
+        return unlocked
+
+    def check_health_achievement(self):
+        """健康恢复成就（治疗后调用）"""
+        if self.pet.get("health", 0) > 80:
+            # 检查历史是否有健康<10的记录
+            for h in reversed(self.history[-20:]):
+                if h.get("type") == "heal" and h.get("detail", {}).get("old", 100) < 10:
+                    return self._unlock("revive")
+        return None
+
+    def format_achievements(self):
+        """格式化成就列表"""
+        achs = self._get_achievements()
+        if not achs:
+            return "还没有解锁任何成就哦~ 继续加油！"
+        lines = ["\U0001f3c6 成就列表\n"]
+        by_cat = {}
+        for ach_id, unlock_time in achs.items():
+            info = ACHIEVEMENTS.get(ach_id, {})
+            cat = info.get("cat", "其他")
+            by_cat.setdefault(cat, []).append((info.get("name", ach_id), info.get("desc", "")))
+        for cat in ("养成", "成长", "探险", "特殊"):
+            items = by_cat.get(cat, [])
+            if items:
+                lines.append(f"\n【{cat}】")
+                for name, desc in items:
+                    lines.append(f"  \u2705 {name} — {desc}")
+        # 未解锁数
+        total = len(ACHIEVEMENTS)
+        done = len(achs)
+        lines.append(f"\n进度：{done}/{total}")
+        return "\n".join(lines)
+
 
 # ============================================================
 # 状态显示
@@ -539,6 +730,10 @@ def _rule_route(text):
         if kw in text:
             return {"action": "heal"}
 
+    for kw in ("成就", "成就列表", "奖杯"):
+        if kw in text:
+            return {"action": "achievements"}
+
     for kw in ("看看", "状态", "怎么样", "你好吗", "你还好吗", "你饿吗"):
         if kw in text:
             return {"action": "status"}
@@ -605,6 +800,16 @@ class MessageHandler:
         del self._user_state[user_id]
         return None
 
+    def _with_achievements(self, reply, action):
+        """在回复后附加成就通知"""
+        unlocked = self.store.record_action(action)
+        if not unlocked:
+            return reply
+        ach_text = "\n".join(f"\n\U0001f3c6 成就解锁：{a['name']}！（{a['desc']}）+{a['xp']}XP" for a in unlocked)
+        if isinstance(reply, tuple):
+            return (reply[0] + ach_text, reply[1])
+        return reply + ach_text
+
     def _handle_normal(self, user_id, text):
         """返回 str 或 (str, image_key) 元组"""
         route = _rule_route(text)
@@ -621,13 +826,13 @@ class MessageHandler:
                 result = self.store.feed()
                 if result is None:
                     return "宠物还在蛋里呢~"
-                return (_feed_reply(result[0], result[1], name), "eating")
+                return self._with_achievements((_feed_reply(result[0], result[1], name), "eating"), "feed")
 
             if action == "bathe":
                 result = self.store.bathe()
                 if result is None:
                     return "宠物还在蛋里呢~"
-                return (_bathe_reply(result[0], result[1], name), "bathing")
+                return self._with_achievements((_bathe_reply(result[0], result[1], name), "bathing"), "bathe")
 
             if action == "play":
                 result = self.store.play()
@@ -635,7 +840,7 @@ class MessageHandler:
                     return "宠物还在蛋里呢~"
                 if result == "no_stamina":
                     return (_no_stamina_reply(name, pet.get("stamina", 0)), "tired")
-                return (_play_reply(result[0], result[1], name, pet.get("stamina", 0)), "playing")
+                return self._with_achievements((_play_reply(result[0], result[1], name, pet.get("stamina", 0)), "playing"), "play")
 
             if action == "sleep":
                 result = self.store.sleep()
@@ -644,13 +849,22 @@ class MessageHandler:
                 if result == "already_sleeping":
                     remaining = self.store.sleep_remaining_min()
                     return (f"{name}已经在睡觉了~ 还有 {remaining} 分钟醒来", "sleeping")
-                return (f"{name}打了个哈欠，钻进被窝睡着了~ (\u02d8\u03c9\u02d8) zzZ\n{SLEEP_DURATION_MIN}分钟后醒来~", "sleeping")
+                return self._with_achievements((f"{name}打了个哈欠，钻进被窝睡着了~ (\u02d8\u03c9\u02d8) zzZ\n{SLEEP_DURATION_MIN}分钟后醒来~", "sleeping"), "sleep")
 
             if action == "heal":
                 result = self.store.heal()
                 if result is None:
                     return "宠物还在蛋里呢~"
-                return (_heal_reply(result[0], result[1], name), "healing")
+                reply = self._with_achievements((_heal_reply(result[0], result[1], name), "healing"), "heal")
+                # 绝处逢生成就
+                revive = self.store.check_health_achievement()
+                if revive:
+                    ach_text = f"\n\U0001f3c6 成就解锁：{revive['name']}！（{revive['desc']}）+{revive['xp']}XP"
+                    if isinstance(reply, tuple):
+                        reply = (reply[0] + ach_text, reply[1])
+                    else:
+                        reply = reply + ach_text
+                return reply
 
             if action == "explore":
                 result = self.store.start_explore()
@@ -664,7 +878,10 @@ class MessageHandler:
                 if result == "no_stamina":
                     return (_no_stamina_reply(name, pet.get("stamina", 0)), "tired")
                 location, until = result
-                return f"{name}背上小书包，向{location}出发了！\u2728\n{EXPLORE_DURATION_MIN}分钟后回来，会带故事回来哦~"
+                return self._with_achievements(f"{name}背上小书包，向{location}出发了！\u2728\n{EXPLORE_DURATION_MIN}分钟后回来，会带故事回来哦~", "explore")
+
+            if action == "achievements":
+                return self.store.format_achievements()
 
             if action == "status":
                 return format_status(pet)
