@@ -8,10 +8,10 @@ import threading
 import random
 
 from config import (
-    PET_DATA_FILE, now_str, today_str,
+    PET_DATA_FILE, now_str, today_str, now,
     HUNGER_DECAY_RATE, HUNGER_ALERT_THRESHOLD, FEED_AMOUNT,
     STAT_CONFIG, PLAY_STAMINA_COST, HEALTH_DECAY_RATE, HEALTH_RESTORE_AMOUNT,
-    XP_REWARDS, GROWTH_STAGES,
+    XP_REWARDS, GROWTH_STAGES, SLEEP_DURATION_MIN,
 )
 
 SCHEMA_VERSION = 2
@@ -55,6 +55,8 @@ class PetStore:
             "last_bathed_at": None, "last_played_at": None,
             "last_slept_at": None, "last_healed_at": None,
             "_decay_tick": 0,
+            "is_sleeping": False, "sleep_until": None,
+            "is_exploring": False, "explore_until": None, "explore_location": None,
         }
         changed = False
         for key, default in defaults.items():
@@ -71,7 +73,7 @@ class PetStore:
                 "pet": self.pet,
                 "owner": self.owner,
                 "history": self.history,
-                "chat_history": self.chat_history[-20:],  # 保留最近10轮
+                "chat_history": self.chat_history[-40:],  # 保留最近20轮
             }
             tmp_file = self.data_file + ".tmp"
             with open(tmp_file, "w", encoding="utf-8") as f:
@@ -153,16 +155,55 @@ class PetStore:
         return (old, self.pet["mood"])
 
     def sleep(self):
-        """睡觉，返回 new_stamina 或 None"""
+        """睡觉，进入睡眠状态。返回 sleep_until 字符串或 None"""
         if not self.pet or self.pet["stage"] == "egg":
             return None
-        old = self.pet["stamina"]
-        self.pet["stamina"] = 100
+        if self.pet.get("is_sleeping"):
+            return "already_sleeping"
+        from datetime import timedelta
+        wake_time = now() + timedelta(minutes=SLEEP_DURATION_MIN)
+        self.pet["is_sleeping"] = True
+        self.pet["sleep_until"] = wake_time.strftime("%Y-%m-%dT%H:%M:%S")
         self.pet["last_slept_at"] = now_str()
         self._add_xp("sleep")
-        self._add_history("sleep", {"old": old, "new": 100})
+        self._add_history("sleep", {"duration": SLEEP_DURATION_MIN})
         self._save()
-        return self.pet["stamina"]
+        return self.pet["sleep_until"]
+
+    def wake_up(self):
+        """唤醒宠物，体力回满"""
+        if not self.pet or not self.pet.get("is_sleeping"):
+            return False
+        self.pet["is_sleeping"] = False
+        self.pet["sleep_until"] = None
+        self.pet["stamina"] = 100
+        self._add_history("wake_up", {"stamina": 100})
+        self._save()
+        return True
+
+    def is_sleeping(self):
+        """检查是否在睡觉，如果到时间了自动醒来"""
+        if not self.pet or not self.pet.get("is_sleeping"):
+            return False
+        sleep_until = self.pet.get("sleep_until")
+        if sleep_until:
+            from datetime import datetime
+            from config import TZ
+            wake_time = datetime.strptime(sleep_until, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=TZ)
+            if now() >= wake_time:
+                self.wake_up()
+                return False
+        return True
+
+    def sleep_remaining_min(self):
+        """返回剩余睡眠分钟数"""
+        if not self.pet or not self.pet.get("sleep_until"):
+            return 0
+        from datetime import datetime
+        from config import TZ
+        wake_time = datetime.strptime(self.pet["sleep_until"], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=TZ)
+        remaining = (wake_time - now()).total_seconds() / 60
+        return max(0, int(remaining))
 
     def heal(self):
         """治疗，返回 (old, new) 或 None"""
@@ -459,6 +500,11 @@ class MessageHandler:
             return "我已经有主人啦~ (\u30fb\u03c9\u30fb)"
         if self.store.pet is None:
             return self._handle_no_pet(user_id, text)
+        # 睡眠状态检查
+        if self.store.is_sleeping():
+            remaining = self.store.sleep_remaining_min()
+            name = self.store.pet.get("name", "小企鹅")
+            return (f"{name}正在睡觉呢 (\u02d8\u03c9\u02d8) zzZ\n还要 {remaining} 分钟才醒哦~\n轻点，别吵醒宝宝~", "sleeping")
         return self._handle_normal(user_id, text)
 
     def _handle_no_pet(self, user_id, text):
@@ -523,7 +569,10 @@ class MessageHandler:
                 result = self.store.sleep()
                 if result is None:
                     return "宠物还在蛋里呢~"
-                return (_sleep_reply(name), "sleeping")
+                if result == "already_sleeping":
+                    remaining = self.store.sleep_remaining_min()
+                    return (f"{name}已经在睡觉了~ 还有 {remaining} 分钟醒来", "sleeping")
+                return (f"{name}打了个哈欠，钻进被窝睡着了~ (\u02d8\u03c9\u02d8) zzZ\n{SLEEP_DURATION_MIN}分钟后醒来~", "sleeping")
 
             if action == "heal":
                 result = self.store.heal()
@@ -555,8 +604,8 @@ class MessageHandler:
                 # 记录对话历史
                 self.store.chat_history.append({"role": "user", "content": text})
                 self.store.chat_history.append({"role": "assistant", "content": reply_text})
-                if len(self.store.chat_history) > 20:
-                    self.store.chat_history = self.store.chat_history[-20:]
+                if len(self.store.chat_history) > 40:
+                    self.store.chat_history = self.store.chat_history[-40:]
                 self.store._save()
                 return (reply_text, "idle")
         except Exception as e:

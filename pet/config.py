@@ -74,6 +74,8 @@ PLAY_STAMINA_COST = 15
 HEALTH_DECAY_RATE = 5
 HEALTH_RESTORE_AMOUNT = 40
 DECAY_INTERVAL_MIN = 15  # scheduler 间隔（各属性 GCD）
+SLEEP_DURATION_MIN = 30  # 睡眠持续时间（分钟）
+EXPLORE_DURATION_MIN = 30  # 探险持续时间（分钟）
 
 # === 经验值 ===
 XP_REWARDS = {"feed": 5, "bathe": 3, "play": 8, "sleep": 2, "heal": 2}

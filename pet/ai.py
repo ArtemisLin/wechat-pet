@@ -99,7 +99,7 @@ def parse_message(text, pet_context, history=None):
 
     # 加入对话历史
     if history:
-        messages.extend(history[-20:])  # 最近 10 轮
+        messages.extend(history[-40:])  # 最近 20 轮
 
     messages.append({"role": "user", "content": text})
 
