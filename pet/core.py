@@ -467,7 +467,7 @@ class MessageHandler:
     def _start_hatch(self, user_id):
         self.store.create_egg(user_id, "")
         self._user_state[user_id] = "ask_name"
-        return "\U0001f95a 蛋裂开了！一只小企鹅探出了头~\n\n给它起个名字吧！"
+        return ("\U0001f95a 蛋裂开了！一只小企鹅探出了头~\n\n给它起个名字吧！", "hatching")
 
     def _handle_state(self, user_id, text):
         state = self._user_state.get(user_id)
@@ -485,6 +485,7 @@ class MessageHandler:
         return None
 
     def _handle_normal(self, user_id, text):
+        """返回 str 或 (str, image_key) 元组"""
         route = _rule_route(text)
         pet = self.store.pet
         name = pet.get("name", "小企鹅")
@@ -499,33 +500,33 @@ class MessageHandler:
                 result = self.store.feed()
                 if result is None:
                     return "宠物还在蛋里呢~"
-                return _feed_reply(result[0], result[1], name)
+                return (_feed_reply(result[0], result[1], name), "eating")
 
             if action == "bathe":
                 result = self.store.bathe()
                 if result is None:
                     return "宠物还在蛋里呢~"
-                return _bathe_reply(result[0], result[1], name)
+                return (_bathe_reply(result[0], result[1], name), "bathing")
 
             if action == "play":
                 result = self.store.play()
                 if result is None:
                     return "宠物还在蛋里呢~"
                 if result == "no_stamina":
-                    return _no_stamina_reply(name, pet.get("stamina", 0))
-                return _play_reply(result[0], result[1], name, pet.get("stamina", 0))
+                    return (_no_stamina_reply(name, pet.get("stamina", 0)), "tired")
+                return (_play_reply(result[0], result[1], name, pet.get("stamina", 0)), "playing")
 
             if action == "sleep":
                 result = self.store.sleep()
                 if result is None:
                     return "宠物还在蛋里呢~"
-                return _sleep_reply(name)
+                return (_sleep_reply(name), "sleeping")
 
             if action == "heal":
                 result = self.store.heal()
                 if result is None:
                     return "宠物还在蛋里呢~"
-                return _heal_reply(result[0], result[1], name)
+                return (_heal_reply(result[0], result[1], name), "healing")
 
             if action == "status":
                 return format_status(pet)
@@ -547,7 +548,7 @@ class MessageHandler:
             }
             result = parse_message(text, pet_context)
             if result and result.get("reply"):
-                return result["reply"]
+                return (result["reply"], "idle")
         except Exception as e:
             print(f"  AI 调用失败: {e}")
 

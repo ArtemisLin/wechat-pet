@@ -23,8 +23,10 @@ os.environ["no_proxy"] = "*"
 _opener = build_opener(ProxyHandler({}))
 
 from config import ILINK_STATE_FILE, TIMEZONE, DECAY_INTERVAL_MIN
+from pathlib import Path
 
 BASE_URL = "https://ilinkai.weixin.qq.com"
+ASSETS_DIR = str(Path(__file__).parent.parent / "assets" / "penguin")
 
 
 # ============================================================
@@ -160,6 +162,20 @@ def _send_to_user(state, user_id, text):
     return False
 
 
+def _send_image_by_key(state, user_id, context_token, image_key):
+    """根据 image_key 发送对应的素材图片"""
+    img_path = os.path.join(ASSETS_DIR, f"{image_key}.png")
+    if not os.path.exists(img_path):
+        print(f"  素材不存在: {img_path}")
+        return False
+    try:
+        from image import send_image_file
+        return send_image_file(state, user_id, context_token, img_path)
+    except Exception as e:
+        print(f"  发送图片失败: {e}")
+        return False
+
+
 # ============================================================
 # 主循环
 # ============================================================
@@ -239,9 +255,13 @@ def run_loop(state, on_message=None):
                     if on_message:
                         reply = on_message(user_id, text, is_voice)
                         if reply:
-                            ok = send_message(state, user_id, context_token, reply)
-                            print(f"  回复: {reply[:60]}{'...' if len(reply)>60 else ''}")
+                            # 支持 (text, image_key) 元组或纯 str
+                            reply_text, image_key = (reply, None) if isinstance(reply, str) else reply
+                            ok = send_message(state, user_id, context_token, reply_text)
+                            print(f"  回复: {reply_text[:60]}{'...' if len(reply_text)>60 else ''}")
                             print(f"  {'✓' if ok else '✗'}")
+                            if image_key:
+                                _send_image_by_key(state, user_id, context_token, image_key)
 
     except KeyboardInterrupt:
         print("\n\n  宠物已休息 👋")
@@ -271,7 +291,13 @@ def start():
     def send_fn(user_id, text):
         _send_to_user(state, user_id, text)
 
-    scheduler = create_scheduler(store, send_fn)
+    def send_image_fn(user_id, image_key):
+        cached = state.get("cached_tokens", {})
+        info = cached.get(user_id)
+        if info:
+            _send_image_by_key(state, user_id, info["context_token"], image_key)
+
+    scheduler = create_scheduler(store, send_fn, send_image_fn)
     scheduler.start()
     atexit.register(lambda: scheduler.shutdown(wait=False))
 
