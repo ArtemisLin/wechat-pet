@@ -145,7 +145,8 @@ def send_message(state, to_user_id, context_token, text):
     }
     resp = _api_request("POST", "/ilink/bot/sendmessage", body=body,
                         headers=_make_headers(state["bot_token"]))
-    if resp and resp.get("ret", 0) == 0 and "error" not in resp:
+    # sendmessage 成功时响应体可能为空 {}，视为成功
+    if resp is not None and "error" not in resp and "timeout" not in resp:
         return True
     print(f"  发送失败: {resp}")
     return False

@@ -29,6 +29,7 @@ class PetStore:
         self.pet = None
         self.owner = {}
         self.history = []
+        self.chat_history = []  # 对话记忆
         self._load()
 
     def _load(self):
@@ -39,6 +40,7 @@ class PetStore:
                 self.pet = data.get("pet")
                 self.owner = data.get("owner", {})
                 self.history = data.get("history", [])
+                self.chat_history = data.get("chat_history", [])
             except (json.JSONDecodeError, KeyError):
                 print("  \u26a0\ufe0f pet_data.json 损坏，使用空数据")
         self._migrate()
@@ -69,6 +71,7 @@ class PetStore:
                 "pet": self.pet,
                 "owner": self.owner,
                 "history": self.history,
+                "chat_history": self.chat_history[-20:],  # 保留最近10轮
             }
             tmp_file = self.data_file + ".tmp"
             with open(tmp_file, "w", encoding="utf-8") as f:
@@ -537,7 +540,7 @@ class MessageHandler:
                 self.store.rename(new_name)
                 return f"好的！从现在起叫 {new_name} 啦~ (之前叫{old_name})"
 
-        # AI 兜底
+        # AI 兜底（带对话记忆）
         try:
             from ai import parse_message
             pet_context = {
@@ -546,9 +549,16 @@ class MessageHandler:
                 "stamina": pet.get("stamina", 50), "health": pet.get("health", 50),
                 "stage": pet.get("stage", "baby"), "level": pet.get("level", 1),
             }
-            result = parse_message(text, pet_context)
+            result = parse_message(text, pet_context, history=self.store.chat_history)
             if result and result.get("reply"):
-                return (result["reply"], "idle")
+                reply_text = result["reply"]
+                # 记录对话历史
+                self.store.chat_history.append({"role": "user", "content": text})
+                self.store.chat_history.append({"role": "assistant", "content": reply_text})
+                if len(self.store.chat_history) > 20:
+                    self.store.chat_history = self.store.chat_history[-20:]
+                self.store._save()
+                return (reply_text, "idle")
         except Exception as e:
             print(f"  AI 调用失败: {e}")
 
