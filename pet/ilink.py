@@ -298,7 +298,7 @@ def main():
     state = load_state()
 
     if len(sys.argv) < 2:
-        print("用法: py ilink.py <start|login|status|send TEXT>")
+        print("用法: py ilink.py <start|login|status|send TEXT|send-image [PATH]>")
         return
 
     cmd = sys.argv[1]
@@ -321,6 +321,21 @@ def main():
         for uid, info in cached.items():
             ok = send_message(state, uid, info["context_token"], text)
             print(f"  → {uid[:20]}: {'✓' if ok else '✗'}")
+            break
+    elif cmd == "send-image":
+        from image import send_image_file
+        img_path = sys.argv[2] if len(sys.argv) >= 3 else "test_image.png"
+        if not os.path.exists(img_path):
+            print(f"  图片不存在: {img_path}")
+            return
+        cached = state.get("cached_tokens", {})
+        if not cached:
+            print("  没有缓存的用户 token，先在微信给 bot 发一条消息")
+            return
+        for uid, info in cached.items():
+            print(f"  发送图片到 {uid[:20]}...")
+            ok = send_image_file(state, uid, info["context_token"], img_path)
+            print(f"  结果: {'✓ 成功' if ok else '✗ 失败'}")
             break
     else:
         print(f"  未知命令: {cmd}")
