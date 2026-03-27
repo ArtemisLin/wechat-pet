@@ -699,10 +699,15 @@ def _rule_route(text):
         return {"action": "hatch"}
 
     # 关键词包含匹配（只要文本里出现关键词就触发）
-    for kw in ("喂食", "喂饭", "投喂", "吃东西", "吃饭"):
+    # 治疗（必须在喂食之前，否则"吃药"会被喂食抢走）
+    for kw in ("治疗", "看医生", "治病", "吃药", "看病"):
+        if kw in text:
+            return {"action": "heal"}
+
+    for kw in ("喂食", "喂饭", "投喂"):
         if kw in text:
             return {"action": "feed"}
-    if text in ("喂",):
+    if text.startswith("吃") or text.startswith("喂"):
         return {"action": "feed"}
 
     # 探险（必须在玩耍之前，否则"出去玩"会匹配到玩耍）
@@ -725,10 +730,6 @@ def _rule_route(text):
             return {"action": "sleep"}
     if text in ("睡",):
         return {"action": "sleep"}
-
-    for kw in ("治疗", "看医生", "治病", "吃药", "看病"):
-        if kw in text:
-            return {"action": "heal"}
 
     for kw in ("成就", "成就列表", "奖杯"):
         if kw in text:
