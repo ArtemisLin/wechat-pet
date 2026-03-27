@@ -396,26 +396,38 @@ def _extract_rename(text):
 
 
 def _rule_route(text):
-    """规则路由，返回 {action, ...} 或 None"""
+    """规则路由，返回 {action, ...} 或 None。使用关键词包含匹配。"""
     text = text.strip()
 
     if text in ("孵蛋", "领养", "养一只", "我要宠物"):
         return {"action": "hatch"}
 
-    if text in ("喂食", "喂", "吃饭", "投喂", "喂饭", "吃东西"):
+    # 关键词包含匹配（只要文本里出现关键词就触发）
+    for kw in ("喂食", "喂饭", "投喂", "吃东西", "吃饭"):
+        if kw in text:
+            return {"action": "feed"}
+    if text in ("喂",):
         return {"action": "feed"}
 
-    if text in ("洗澡", "洗", "洗洗", "清洁", "洗个澡"):
-        return {"action": "bathe"}
+    for kw in ("洗澡", "洗洗", "洗个澡", "清洁"):
+        if kw in text:
+            return {"action": "bathe"}
 
-    if text in ("逗乐", "玩", "陪玩", "玩耍", "玩游戏", "陪我玩"):
+    for kw in ("玩耍", "陪玩", "玩游戏", "逗乐", "去玩", "陪我玩"):
+        if kw in text:
+            return {"action": "play"}
+    if text in ("玩",):
         return {"action": "play"}
 
-    if text in ("睡觉", "休息", "睡", "去睡觉", "休息一下"):
+    for kw in ("睡觉", "休息", "去睡"):
+        if kw in text:
+            return {"action": "sleep"}
+    if text in ("睡",):
         return {"action": "sleep"}
 
-    if text in ("治疗", "看医生", "治病", "吃药", "看病"):
-        return {"action": "heal"}
+    for kw in ("治疗", "看医生", "治病", "吃药", "看病"):
+        if kw in text:
+            return {"action": "heal"}
 
     for kw in ("看看", "状态", "怎么样", "你好吗", "你还好吗", "你饿吗"):
         if kw in text:
