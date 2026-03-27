@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.env
+pet_data.json
+ilink_state.json
+*.tmp
+*.bak
