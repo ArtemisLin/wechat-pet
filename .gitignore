@@ -5,3 +5,5 @@ pet_data.json
 ilink_state.json
 *.tmp
 *.bak
+test_*.png
+test_*.gif
