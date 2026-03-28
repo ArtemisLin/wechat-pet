@@ -7,11 +7,11 @@ A virtual pet agent running on WeChat via the official iLink (ClawBot) Bot API. 
 ## Features
 
 - **Nurturing System** — 5 stats (hunger, cleanliness, mood, stamina, health) that decay over time
-- **Pixel Art** — Custom pixel penguin images for each action and state
+- **Pixel Art** — Pixel penguin images for actions and states (some assets are placeholders, replaceable)
 - **Sleep Mode** — Pet sleeps for 30 min, wakes up automatically
-- **Exploration** — Send your pet on adventures, it comes back with AI-generated stories
+- **Exploration** — Send your pet on adventures via command, it comes back with AI-generated stories
 - **Achievement System** — 18 achievements across 4 categories
-- **AI Personality** — Powered by DeepSeek, with time awareness and conversation memory
+- **AI Personality** — Tested with DeepSeek, with time awareness and conversation memory
 - **Growth System** — XP & levels (baby → child → teen → adult)
 
 ## Screenshots
@@ -27,8 +27,8 @@ A virtual pet agent running on WeChat via the official iLink (ClawBot) Bot API. 
 
 ## Prerequisites
 
-- **Python 3.10+** (Windows: install via [python.org](https://www.python.org/downloads/))
-- **WeChat** with ClawBot plugin enabled (iOS 8.0.70+)
+- **Python 3.13** (tested; other 3.10+ versions may work but not verified)
+- **WeChat** with ClawBot plugin enabled
 - **DeepSeek API Key** (get one at [platform.deepseek.com](https://platform.deepseek.com))
 
 ## Quick Start
@@ -133,19 +133,15 @@ Edit `pet/config.py` `STAT_CONFIG` to adjust decay rates, restore amounts, and a
 
 ### AI Model
 
-Any OpenAI-compatible API works. Change `AI_BASE_URL` and `AI_MODEL` in `pet/.env`.
+Tested with DeepSeek. Other OpenAI-compatible APIs may work by changing `AI_BASE_URL` and `AI_MODEL` in `pet/.env`, but are not tested.
 
 ## Technical Notes
 
 - **iLink Protocol**: HTTP/JSON, long-polling for messages, AES-128-ECB for media encryption
 - **Image Upload**: `getuploadurl` → AES encrypt → POST to CDN → `sendmessage` with `image_item`
 - **AES Key Format**: `base64(hex_string)` (Format B, not `base64(raw_bytes)`)
-- **GIF**: Not supported by iLink (renders as static first frame)
+- **GIF**: Animated GIFs are sent successfully but WeChat client renders only the first frame (static)
 - **Data**: Stored in `pet_data.json` with atomic writes (crash-safe)
-
-## License
-
-MIT
 
 ## Acknowledgments
 
