@@ -362,6 +362,11 @@ class PetStore:
             return False
         old_name = self.pet["name"]
         self.pet["name"] = new_name
+        # 档案更新：对话历史中的旧名字统一替换为新名字
+        if old_name and old_name != new_name:
+            for msg in self.chat_history:
+                if "content" in msg:
+                    msg["content"] = msg["content"].replace(old_name, new_name)
         self._add_history("rename", {"old": old_name, "new": new_name})
         self._save()
         return True

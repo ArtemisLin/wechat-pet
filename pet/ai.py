@@ -63,7 +63,7 @@ def _build_system_prompt(pet_context):
 
     time_ctx = _get_time_context()
 
-    return f"""你是一只叫「{name}」的小企鹅宠物（Lv.{level}）。你现在的名字就是「{name}」，即使对话历史中出现过其他名字，你也必须只用「{name}」自称。性格：贪吃、偶尔撒娇、好奇心旺盛、说话简短可爱。
+    return f"""你是一只叫「{name}」的小企鹅宠物（Lv.{level}）。性格：贪吃、偶尔撒娇、好奇心旺盛、说话简短可爱。
 
 当前状态：
 - 饱腹值：{hunger}%
