@@ -362,6 +362,8 @@ class PetStore:
             return False
         old_name = self.pet["name"]
         self.pet["name"] = new_name
+        # 清空对话历史，避免 AI 混用旧名字
+        self.chat_history.clear()
         self._add_history("rename", {"old": old_name, "new": new_name})
         self._save()
         return True
