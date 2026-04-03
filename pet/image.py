@@ -44,7 +44,12 @@ def _api_request(method, path, body=None, headers=None, timeout=15):
     try:
         with _opener.open(req, timeout=timeout) as resp:
             raw = resp.read()
-            return json.loads(raw.decode("utf-8")) if raw else {}
+            result = json.loads(raw.decode("utf-8")) if raw else {}
+            ret = result.get("ret")
+            if ret is not None and ret != 0:
+                print(f"  API ret={ret}: {path}")
+                result["_ret_error"] = ret
+            return result
     except HTTPError as e:
         body_text = e.read().decode("utf-8", errors="replace")
         print(f"  HTTP {e.code}: {body_text[:300]}")
@@ -197,14 +202,21 @@ def send_image(state, to_user_id, context_token, image_bytes):
     resp = _api_request("POST", "/ilink/bot/sendmessage", body=body,
                         headers=_make_headers(state["bot_token"]))
     # sendmessage 成功时响应体为空 {} 或 ret=0
-    if resp is not None and "error" not in resp:
+    if resp is not None and "error" not in resp and "_ret_error" not in resp:
         print(f"  [图片] 发送成功 ✓")
         return True
     print(f"  [图片] sendmessage 失败: {resp}")
     return False
 
 
+MAX_IMAGE_SIZE = 10 * 1024 * 1024  # 10MB
+
+
 def send_image_file(state, to_user_id, context_token, file_path):
     """从文件路径发送图片"""
+    file_size = os.path.getsize(file_path)
+    if file_size > MAX_IMAGE_SIZE:
+        print(f"  [图片] 文件过大 ({file_size / 1024 / 1024:.1f}MB > 10MB): {file_path}")
+        return False
     with open(file_path, "rb") as f:
         return send_image(state, to_user_id, context_token, f.read())

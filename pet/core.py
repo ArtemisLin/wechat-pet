@@ -9,9 +9,10 @@ import random
 
 from config import (
     PET_DATA_FILE, now_str, today_str, now,
-    HUNGER_DECAY_RATE, HUNGER_ALERT_THRESHOLD, FEED_AMOUNT,
+    HUNGER_DECAY_RATE, HUNGER_ALERT_THRESHOLD,
     STAT_CONFIG, PLAY_STAMINA_COST, HEALTH_DECAY_RATE, HEALTH_RESTORE_AMOUNT,
     XP_REWARDS, GROWTH_STAGES, SLEEP_DURATION_MIN, EXPLORE_DURATION_MIN,
+    SOUVENIRS,
 )
 
 SCHEMA_VERSION = 3
@@ -53,11 +54,13 @@ class PetStore:
 
     def __init__(self, data_file=None):
         self.data_file = data_file or PET_DATA_FILE
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self.pet = None
         self.owner = {}
         self.history = []
         self.chat_history = []  # 对话记忆
+        self.diary = []  # 宠物日记
+        self.collection = []  # 探险收藏品
         self._load()
 
     def _load(self):
@@ -69,6 +72,8 @@ class PetStore:
                 self.owner = data.get("owner", {})
                 self.history = data.get("history", [])
                 self.chat_history = data.get("chat_history", [])
+                self.diary = data.get("diary", [])
+                self.collection = data.get("collection", [])
             except (json.JSONDecodeError, KeyError):
                 print("  \u26a0\ufe0f pet_data.json 损坏，使用空数据")
         self._migrate()
@@ -90,13 +95,26 @@ class PetStore:
                 "total_sleeps": 0, "total_heals": 0, "total_explores": 0,
                 "explore_locations": [], "consecutive_days": 0,
                 "last_active_date": None, "daily_messages": 0,
-                "daily_messages_date": None,
+                "daily_messages_date": None, "active_dates": [],
             },
         }
         changed = False
         for key, default in defaults.items():
             if key not in self.pet:
                 self.pet[key] = default
+                changed = True
+        # 种子填充 active_dates
+        stats = self.pet.setdefault("stats", {})
+        active_dates = stats.setdefault("active_dates", [])
+        if not active_dates:
+            created_at = self.pet.get("created_at", "")
+            if created_at:
+                active_dates.append(created_at[:10])
+            last_active = stats.get("last_active_date")
+            if last_active and last_active not in active_dates:
+                active_dates.append(last_active)
+            if active_dates:
+                changed = True
                 changed = True
         if changed:
             self._save()
@@ -109,6 +127,8 @@ class PetStore:
                 "owner": self.owner,
                 "history": self.history,
                 "chat_history": self.chat_history[-40:],  # 保留最近20轮
+                "diary": self.diary[-30:],  # 保留最近30天日记
+                "collection": self.collection,
             }
             tmp_file = self.data_file + ".tmp"
             with open(tmp_file, "w", encoding="utf-8") as f:
@@ -119,102 +139,119 @@ class PetStore:
 
     def create_egg(self, user_id, user_name):
         """创建蛋，返回 True/False"""
-        if self.pet is not None:
-            return False
-        self.pet = {
-            "name": None, "stage": "egg",
-            "hunger": 100, "cleanliness": 100, "mood": 100, "stamina": 100, "health": 100,
-            "xp": 0, "level": 1,
-            "hatched_at": None, "last_fed_at": None, "last_bathed_at": None,
-            "last_played_at": None, "last_slept_at": None, "last_healed_at": None,
-            "last_decay_at": None, "_decay_tick": 0,
-            "created_at": now_str(),
-        }
-        self.owner = {"user_id": user_id, "name": user_name}
-        self._add_history("create_egg", {"by": user_name})
-        self._save()
-        return True
+        with self._lock:
+            if self.pet is not None:
+                return False
+            self.pet = {
+                "name": None, "stage": "egg",
+                "hunger": 100, "cleanliness": 100, "mood": 100, "stamina": 100, "health": 100,
+                "xp": 0, "level": 1,
+                "hatched_at": None, "last_fed_at": None, "last_bathed_at": None,
+                "last_played_at": None, "last_slept_at": None, "last_healed_at": None,
+                "last_decay_at": None, "_decay_tick": 0,
+                "created_at": now_str(),
+            }
+            self.owner = {"user_id": user_id, "name": user_name}
+            self._add_history("create_egg", {"by": user_name})
+            self._save()
+            return True
 
     def hatch(self, name):
         """孵化：蛋→宝宝"""
-        if not self.pet or self.pet["stage"] != "egg":
-            return False
-        self.pet["name"] = name
-        self.pet["stage"] = "baby"
-        self.pet["hatched_at"] = now_str()
-        self.pet["last_decay_at"] = now_str()
-        self._add_history("hatch", {"name": name})
-        self._save()
-        return True
+        with self._lock:
+            if not self.pet or self.pet["stage"] != "egg":
+                return False
+            self.pet["name"] = name
+            self.pet["stage"] = "baby"
+            self.pet["hatched_at"] = now_str()
+            self.pet["last_decay_at"] = now_str()
+            self._add_history("hatch", {"name": name})
+            self._save()
+            return True
+
+    @staticmethod
+    def _rand_restore(amount):
+        """restore_amount 可以是固定值或 (min, max) 范围"""
+        if isinstance(amount, tuple):
+            return random.randint(amount[0], amount[1])
+        return amount
 
     def feed(self):
         """喂食，返回 (old, new) 或 None"""
-        if not self.pet or self.pet["stage"] == "egg":
-            return None
-        old = self.pet["hunger"]
-        self.pet["hunger"] = min(100, old + FEED_AMOUNT)
-        self.pet["last_fed_at"] = now_str()
-        self._add_xp("feed")
-        self._check_health()
-        self._add_history("feed", {"old": old, "new": self.pet["hunger"]})
-        self._save()
-        return (old, self.pet["hunger"])
+        with self._lock:
+            if not self.pet or self.pet["stage"] == "egg":
+                return None
+            old = self.pet["hunger"]
+            restore = self._rand_restore(STAT_CONFIG["hunger"]["restore_amount"])
+            self.pet["hunger"] = min(100, old + restore)
+            self.pet["last_fed_at"] = now_str()
+            self._add_xp("feed")
+            self._check_health()
+            self._add_history("feed", {"old": old, "new": self.pet["hunger"]})
+            self._save()
+            return (old, self.pet["hunger"])
 
     def bathe(self):
         """洗澡，返回 (old, new) 或 None"""
-        if not self.pet or self.pet["stage"] == "egg":
-            return None
-        old = self.pet["cleanliness"]
-        self.pet["cleanliness"] = min(100, old + STAT_CONFIG["cleanliness"]["restore_amount"])
-        self.pet["last_bathed_at"] = now_str()
-        self._add_xp("bathe")
-        self._check_health()
-        self._add_history("bathe", {"old": old, "new": self.pet["cleanliness"]})
-        self._save()
-        return (old, self.pet["cleanliness"])
+        with self._lock:
+            if not self.pet or self.pet["stage"] == "egg":
+                return None
+            old = self.pet["cleanliness"]
+            restore = self._rand_restore(STAT_CONFIG["cleanliness"]["restore_amount"])
+            self.pet["cleanliness"] = min(100, old + restore)
+            self.pet["last_bathed_at"] = now_str()
+            self._add_xp("bathe")
+            self._check_health()
+            self._add_history("bathe", {"old": old, "new": self.pet["cleanliness"]})
+            self._save()
+            return (old, self.pet["cleanliness"])
 
     def play(self):
         """逗乐/玩耍，返回 (old_mood, new_mood) 或 None 或 "no_stamina" """
-        if not self.pet or self.pet["stage"] == "egg":
-            return None
-        if self.pet["stamina"] < PLAY_STAMINA_COST:
-            return "no_stamina"
-        old = self.pet["mood"]
-        self.pet["mood"] = min(100, old + STAT_CONFIG["mood"]["restore_amount"])
-        self.pet["stamina"] = max(0, self.pet["stamina"] - PLAY_STAMINA_COST)
-        self.pet["last_played_at"] = now_str()
-        self._add_xp("play")
-        self._check_health()
-        self._add_history("play", {"old": old, "new": self.pet["mood"], "stamina_cost": PLAY_STAMINA_COST})
-        self._save()
-        return (old, self.pet["mood"])
+        with self._lock:
+            if not self.pet or self.pet["stage"] == "egg":
+                return None
+            if self.pet["stamina"] < PLAY_STAMINA_COST:
+                return "no_stamina"
+            old = self.pet["mood"]
+            restore = self._rand_restore(STAT_CONFIG["mood"]["restore_amount"])
+            self.pet["mood"] = min(100, old + restore)
+            self.pet["stamina"] = max(0, self.pet["stamina"] - PLAY_STAMINA_COST)
+            self.pet["last_played_at"] = now_str()
+            self._add_xp("play")
+            self._check_health()
+            self._add_history("play", {"old": old, "new": self.pet["mood"], "stamina_cost": PLAY_STAMINA_COST})
+            self._save()
+            return (old, self.pet["mood"])
 
     def sleep(self):
         """睡觉，进入睡眠状态。返回 sleep_until 字符串或 None"""
-        if not self.pet or self.pet["stage"] == "egg":
-            return None
-        if self.pet.get("is_sleeping"):
-            return "already_sleeping"
-        from datetime import timedelta
-        wake_time = now() + timedelta(minutes=SLEEP_DURATION_MIN)
-        self.pet["is_sleeping"] = True
-        self.pet["sleep_until"] = wake_time.strftime("%Y-%m-%dT%H:%M:%S")
-        self.pet["last_slept_at"] = now_str()
-        self._add_xp("sleep")
-        self._add_history("sleep", {"duration": SLEEP_DURATION_MIN})
-        self._save()
-        return self.pet["sleep_until"]
+        with self._lock:
+            if not self.pet or self.pet["stage"] == "egg":
+                return None
+            if self.pet.get("is_sleeping"):
+                return "already_sleeping"
+            from datetime import timedelta
+            wake_time = now() + timedelta(minutes=SLEEP_DURATION_MIN)
+            self.pet["is_sleeping"] = True
+            self.pet["sleep_until"] = wake_time.strftime("%Y-%m-%dT%H:%M:%S")
+            self.pet["last_slept_at"] = now_str()
+            self._add_xp("sleep")
+            self._add_history("sleep", {"duration": SLEEP_DURATION_MIN})
+            self._save()
+            return self.pet["sleep_until"]
 
     def wake_up(self):
         """唤醒宠物，体力回满"""
-        if not self.pet or not self.pet.get("is_sleeping"):
-            return False
-        self.pet["is_sleeping"] = False
-        self.pet["sleep_until"] = None
-        self.pet["stamina"] = 100
-        self._add_history("wake_up", {"stamina": 100})
-        self._save()
-        return True
+        with self._lock:
+            if not self.pet or not self.pet.get("is_sleeping"):
+                return False
+            self.pet["is_sleeping"] = False
+            self.pet["sleep_until"] = None
+            self.pet["stamina"] = 100
+            self._add_history("wake_up", {"stamina": 100})
+            self._save()
+            return True
 
     def is_sleeping(self):
         """检查是否在睡觉，如果到时间了自动醒来"""
@@ -242,42 +279,74 @@ class PetStore:
 
     # --- 探险 ---
 
-    EXPLORE_LOCATIONS = ["海边", "森林", "山顶", "小镇集市", "花园", "湖边", "雪山", "沙漠绿洲", "古老图书馆", "神秘洞穴"]
+    # 地点 → 探险时长范围 (min, max) 分钟
+    EXPLORE_LOCATIONS = {
+        "花园":       (20, 40),
+        "湖边":       (20, 40),
+        "小镇集市":   (40, 70),
+        "森林":       (40, 70),
+        "海边":       (60, 90),
+        "山顶":       (60, 90),
+        "雪山":       (80, 120),
+        "沙漠绿洲":   (80, 120),
+        "古老图书馆": (90, 120),
+        "神秘洞穴":   (90, 120),
+    }
 
     def start_explore(self):
-        """出发探险，返回 (location, explore_until) 或 None 或 "no_stamina" 或 "busy" """
-        if not self.pet or self.pet["stage"] == "egg":
-            return None
-        if self.pet.get("is_sleeping"):
-            return "sleeping"
-        if self.pet.get("is_exploring"):
-            return "already_exploring"
-        if self.pet.get("stamina", 0) < 20:
-            return "no_stamina"
-        from datetime import timedelta
-        location = random.choice(self.EXPLORE_LOCATIONS)
-        return_time = now() + timedelta(minutes=EXPLORE_DURATION_MIN)
-        self.pet["is_exploring"] = True
-        self.pet["explore_until"] = return_time.strftime("%Y-%m-%dT%H:%M:%S")
-        self.pet["explore_location"] = location
-        self.pet["stamina"] = max(0, self.pet["stamina"] - 20)
-        self._add_xp("explore")
-        self._add_history("explore_start", {"location": location})
-        self._save()
-        return (location, self.pet["explore_until"])
+        """出发探险，返回 (location, explore_until, duration_min) 或 None 或 "no_stamina" 或 "busy" """
+        with self._lock:
+            if not self.pet or self.pet["stage"] == "egg":
+                return None
+            if self.pet.get("is_sleeping"):
+                return "sleeping"
+            if self.pet.get("is_exploring"):
+                return "already_exploring"
+            if self.pet.get("stamina", 0) < 20:
+                return "no_stamina"
+            from datetime import timedelta
+            location = random.choice(list(self.EXPLORE_LOCATIONS.keys()))
+            min_dur, max_dur = self.EXPLORE_LOCATIONS[location]
+            duration = random.randint(min_dur, max_dur)
+            return_time = now() + timedelta(minutes=duration)
+            self.pet["is_exploring"] = True
+            self.pet["explore_until"] = return_time.strftime("%Y-%m-%dT%H:%M:%S")
+            self.pet["explore_location"] = location
+            self.pet["stamina"] = max(0, self.pet["stamina"] - 20)
+            self._add_xp("explore")
+            self._add_history("explore_start", {"location": location, "duration": duration})
+            self._save()
+            return (location, self.pet["explore_until"], duration)
 
     def finish_explore(self):
-        """探险结束，返回 location 或 None"""
-        if not self.pet or not self.pet.get("is_exploring"):
-            return None
-        location = self.pet.get("explore_location", "未知之地")
-        self.pet["is_exploring"] = False
-        self.pet["explore_until"] = None
-        self.pet["explore_location"] = None
-        self.pet["mood"] = min(100, self.pet.get("mood", 50) + 15)  # 探险回来心情变好
-        self._add_history("explore_end", {"location": location})
-        self._save()
-        return location
+        """探险结束，返回 (location, souvenir) 或 None"""
+        with self._lock:
+            if not self.pet or not self.pet.get("is_exploring"):
+                return None
+            location = self.pet.get("explore_location", "未知之地")
+            self.pet["is_exploring"] = False
+            self.pet["explore_until"] = None
+            self.pet["explore_location"] = None
+            self.pet["mood"] = min(100, self.pet.get("mood", 50) + 15)
+            souvenir = None
+            pool = SOUVENIRS.get(location, [])
+            if pool:
+                souvenir = random.choice(pool)
+                if souvenir not in self.collection:
+                    self.collection.append(souvenir)
+            self._add_history("explore_end", {"location": location, "souvenir": souvenir})
+            self._save()
+            return (location, souvenir)
+
+    def format_collection(self):
+        """格式化收藏品列表"""
+        if not self.collection:
+            return "\U0001f392 背包空空的~ 去探险收集纪念品吧！"
+        total_possible = sum(len(v) for v in SOUVENIRS.values())
+        lines = [f"\U0001f392 收藏品 ({len(self.collection)}/{total_possible})\n"]
+        for item in self.collection:
+            lines.append(f"  \u2728 {item}")
+        return "\n".join(lines)
 
     def is_exploring(self):
         """检查是否在探险，到时间自动返回"""
@@ -303,15 +372,17 @@ class PetStore:
 
     def heal(self):
         """治疗，返回 (old, new) 或 None"""
-        if not self.pet or self.pet["stage"] == "egg":
-            return None
-        old = self.pet["health"]
-        self.pet["health"] = min(100, old + HEALTH_RESTORE_AMOUNT)
-        self.pet["last_healed_at"] = now_str()
-        self._add_xp("heal")
-        self._add_history("heal", {"old": old, "new": self.pet["health"]})
-        self._save()
-        return (old, self.pet["health"])
+        with self._lock:
+            if not self.pet or self.pet["stage"] == "egg":
+                return None
+            old = self.pet["health"]
+            restore = self._rand_restore(HEALTH_RESTORE_AMOUNT)
+            self.pet["health"] = min(100, old + restore)
+            self.pet["last_healed_at"] = now_str()
+            self._add_xp("heal")
+            self._add_history("heal", {"old": old, "new": self.pet["health"]})
+            self._save()
+            return (old, self.pet["health"])
 
     def decay_hunger(self):
         """Phase 1 兼容：单属性衰减"""
@@ -325,51 +396,38 @@ class PetStore:
 
     def decay_all(self):
         """统一衰减（Phase 2），返回 {stat: (old, new)} 或 None"""
-        if not self.pet or self.pet["stage"] == "egg":
-            return None
-        tick = self.pet.get("_decay_tick", 0) + 1
-        self.pet["_decay_tick"] = tick
-        results = {}
-        is_sick = self.pet.get("health", 100) < 20
-        mult = 1.5 if is_sick else 1.0
+        with self._lock:
+            if not self.pet or self.pet["stage"] == "egg":
+                return None
+            tick = self.pet.get("_decay_tick", 0) + 1
+            self.pet["_decay_tick"] = tick
+            results = {}
+            is_sick = self.pet.get("health", 100) < 20
+            mult = 1.5 if is_sick else 1.0
 
-        for stat in ("hunger", "cleanliness", "mood"):
-            cfg = STAT_CONFIG[stat]
+            for stat in ("hunger", "cleanliness", "mood"):
+                cfg = STAT_CONFIG[stat]
+                if tick % cfg["tick_mod"] == 0:
+                    old = self.pet[stat]
+                    self.pet[stat] = max(0, old - int(cfg["decay_rate"] * mult))
+                    results[stat] = (old, self.pet[stat])
+
+            # 体力回复
+            cfg = STAT_CONFIG["stamina"]
             if tick % cfg["tick_mod"] == 0:
-                old = self.pet[stat]
-                self.pet[stat] = max(0, old - int(cfg["decay_rate"] * mult))
-                results[stat] = (old, self.pet[stat])
+                old = self.pet["stamina"]
+                self.pet["stamina"] = min(100, old + cfg["regen_rate"])
+                results["stamina"] = (old, self.pet["stamina"])
 
-        # 体力回复
-        cfg = STAT_CONFIG["stamina"]
-        if tick % cfg["tick_mod"] == 0:
-            old = self.pet["stamina"]
-            self.pet["stamina"] = min(100, old + cfg["regen_rate"])
-            results["stamina"] = (old, self.pet["stamina"])
-
-        self._check_health()
-        self.pet["last_decay_at"] = now_str()
-        self._save()
-        return results
+            self._check_health()
+            self.pet["last_decay_at"] = now_str()
+            self._save()
+            return results
 
     def is_hungry(self):
         if not self.pet:
             return False
         return self.pet["hunger"] < HUNGER_ALERT_THRESHOLD
-
-    def rename(self, new_name):
-        if not self.pet:
-            return False
-        old_name = self.pet["name"]
-        self.pet["name"] = new_name
-        # 档案更新：对话历史中的旧名字统一替换为新名字
-        if old_name and old_name != new_name:
-            for msg in self.chat_history:
-                if "content" in msg:
-                    msg["content"] = msg["content"].replace(old_name, new_name)
-        self._add_history("rename", {"old": old_name, "new": new_name})
-        self._save()
-        return True
 
     def _add_xp(self, action):
         """加经验值，升级时返回新等级"""
@@ -397,6 +455,45 @@ class PetStore:
         if len(self.history) > 100:
             self.history = self.history[-100:]
 
+    # --- 日记系统 ---
+
+    def get_today_events(self):
+        """提取今天的事件摘要，用于生成日记"""
+        today = today_str()
+        events = [h for h in self.history if h["time"].startswith(today)]
+        summary = {"feeds": 0, "baths": 0, "plays": 0, "sleeps": 0, "heals": 0, "explores": [], "chats": 0}
+        for e in events:
+            t = e["type"]
+            if t == "feed": summary["feeds"] += 1
+            elif t == "bathe": summary["baths"] += 1
+            elif t == "play": summary["plays"] += 1
+            elif t == "sleep": summary["sleeps"] += 1
+            elif t == "heal": summary["heals"] += 1
+            elif t == "explore_end":
+                loc = e.get("detail", {}).get("location", "")
+                if loc: summary["explores"].append(loc)
+        summary["chats"] = len([h for h in self.chat_history if True])  # approximate
+        return summary
+
+    def add_diary_entry(self, date_str, content):
+        """添加日记条目"""
+        self.diary.append({"date": date_str, "content": content})
+        if len(self.diary) > 30:
+            self.diary = self.diary[-30:]
+        self._save()
+
+    def format_diary(self, days=7):
+        """格式化最近N天日记"""
+        if not self.diary:
+            return "日记本还是空的呢~ 明天就开始写日记！"
+        recent = self.diary[-days:]
+        lines = ["\U0001f4d6 宠物日记\n"]
+        for entry in reversed(recent):
+            lines.append(f"\u2500\u2500 {entry['date']} \u2500\u2500")
+            lines.append(entry["content"])
+            lines.append("")
+        return "\n".join(lines)
+
     # --- 成就系统 ---
 
     def _get_stats(self):
@@ -405,7 +502,7 @@ class PetStore:
             "total_sleeps": 0, "total_heals": 0, "total_explores": 0,
             "explore_locations": [], "consecutive_days": 0,
             "last_active_date": None, "daily_messages": 0,
-            "daily_messages_date": None,
+            "daily_messages_date": None, "active_dates": [],
         })
 
     def _get_achievements(self):
@@ -426,6 +523,10 @@ class PetStore:
 
     def record_action(self, action):
         """记录操作统计+检查成就，返回新解锁的成就列表"""
+        with self._lock:
+            return self._record_action_locked(action)
+
+    def _record_action_locked(self, action):
         stats = self._get_stats()
         unlocked = []
 
@@ -445,6 +546,11 @@ class PetStore:
             stats["last_active_date"] = today
             stats["daily_messages"] = 0
             stats["daily_messages_date"] = today
+
+        # 维护 active_dates 列表
+        active_dates = stats.setdefault("active_dates", [])
+        if today not in active_dates:
+            active_dates.append(today)
 
         stats["daily_messages"] = stats.get("daily_messages", 0) + 1
 
@@ -578,8 +684,24 @@ STAT_DISPLAY = [
 ]
 
 
+def _xp_for_next_stage(xp):
+    """返回 (当前阶段名, 当前阶段起始XP, 下一阶段XP) 用于进度计算"""
+    current_name = "宝宝"
+    current_threshold = 0
+    next_threshold = None
+    for i, (threshold, _, cn_name) in enumerate(GROWTH_STAGES):
+        if xp >= threshold:
+            current_name = cn_name
+            current_threshold = threshold
+            if i + 1 < len(GROWTH_STAGES):
+                next_threshold = GROWTH_STAGES[i + 1][0]
+            else:
+                next_threshold = None  # 已满级
+    return current_name, current_threshold, next_threshold
+
+
 def format_status(pet):
-    """格式化宠物状态仪表盘（5 属性）"""
+    """格式化宠物状态卡（小Q风格）"""
     if not pet:
         return "还没有宠物呢~ 发送「孵蛋」领养一只吧！"
     if pet["stage"] == "egg":
@@ -588,37 +710,62 @@ def format_status(pet):
     name = pet["name"] or "???"
     level = pet.get("level", 1)
     xp = pet.get("xp", 0)
+    stage_name, stage_start, next_stage_xp = _xp_for_next_stage(xp)
 
-    stage_name = "宝宝"
-    for threshold, _, cn_name in GROWTH_STAGES:
-        if xp >= threshold:
-            stage_name = cn_name
+    # 头部：名字 + 等级 + 阶段
+    lines = [f"\U0001f427 {name}  Lv.{level} · {stage_name}"]
+    lines.append("─" * 18)
 
-    lines = [f"\U0001f427 {name}  Lv.{level} {stage_name}"]
-
+    # 5 属性进度条
     for stat_key, emoji, label in STAT_DISPLAY:
         value = pet.get(stat_key, 0)
-        face = _stat_face(value)
         bar = _progress_bar(value)
-        lines.append(f"{emoji} {label}：{face} {bar} {value}%")
+        lines.append(f"{emoji} {label} {bar} {value}%")
 
-    warnings = []
-    if pet.get("hunger", 100) < 20:
-        warnings.append("\u26a0\ufe0f 好饿啊... 快喂我！")
-    if pet.get("cleanliness", 100) < 20:
-        warnings.append("\u26a0\ufe0f 脏兮兮的... 该洗澡啦！")
-    if pet.get("mood", 100) < 20:
-        warnings.append("\u26a0\ufe0f 好无聊... 陪我玩嘛~")
-    if pet.get("health", 100) < 20:
-        warnings.append("\U0001f6a8 生病了... 需要治疗！")
+    # 经验进度
+    lines.append("─" * 18)
+    if next_stage_xp:
+        xp_progress = xp - stage_start
+        xp_needed = next_stage_xp - stage_start
+        xp_bar = _progress_bar(xp_progress, xp_needed, 8)
+        lines.append(f"\u2b50 经验 {xp_bar} {xp}/{next_stage_xp}")
+    else:
+        lines.append(f"\u2b50 经验 {xp} （已满级！）")
 
-    all_high = all(pet.get(s, 0) >= 80 for s, _, _ in STAT_DISPLAY)
-    if all_high:
-        warnings.append("\U0001f31f 状态全满！超级开心！\u30fd(>\u2200<\u2606)\uff89")
+    # 成就统计
+    achs = pet.get("achievements", {})
+    done = len(achs)
+    total = len(ACHIEVEMENTS)
+    lines.append(f"\U0001f3c6 成就 {done}/{total}")
 
-    if warnings:
-        lines.append("")
-        lines.extend(warnings)
+    # 在一起的天数
+    stats = pet.get("stats", {})
+    if stats.get("active_dates"):
+        from config import now as _now
+        first_day = min(stats["active_dates"])
+        today = _now().strftime("%Y-%m-%d")
+        from datetime import datetime
+        days = (datetime.strptime(today, "%Y-%m-%d") - datetime.strptime(first_day, "%Y-%m-%d")).days + 1
+        lines.append(f"\U0001f4c5 在一起 {days} 天")
+
+    # 当前状态提示
+    lines.append("─" * 18)
+    if pet.get("is_sleeping"):
+        lines.append("\U0001f4a4 正在睡觉...")
+    elif pet.get("is_exploring"):
+        loc = pet.get("explore_location", "外面")
+        lines.append(f"\U0001f30d 正在{loc}探险...")
+    else:
+        # 综合评语
+        avg = sum(pet.get(s, 0) for s, _, _ in STAT_DISPLAY) / 5
+        if avg >= 80:
+            lines.append("\U0001f31f 状态超棒！开心得转圈圈~")
+        elif avg >= 50:
+            lines.append("\U0001f60a 状态还不错~")
+        elif avg >= 20:
+            lines.append("\U0001f610 有点疲惫，需要照顾一下...")
+        else:
+            lines.append("\U0001f622 状态很差！快来照顾我...")
 
     return "\n".join(lines)
 
@@ -649,10 +796,31 @@ def _bathe_reply(old, new, pet_name):
     return f"{name}舒舒服服洗了个澡~ {k}\n\U0001f6c1 清洁：{_progress_bar(new)} {new}%"
 
 
+PLAY_ACTIVITIES = [
+    ("{name}在草地上追着小球跑来跑去！", "playing"),
+    ("{name}拿起小吉他弹了一首歌~ 🎸", "happy"),
+    ("{name}和蝴蝶玩起了追逐游戏~", "playing"),
+    ("{name}堆了一个小沙堡，好有成就感！", "happy"),
+    ("{name}在地上画画，画了一幅自画像~", "happy"),
+    ("{name}玩起了捉迷藏，躲在桌子底下偷笑~", "playing"),
+    ("{name}在水坑里踩水玩，溅了一身水花！", "playing"),
+    ("{name}找到一根树枝当宝剑，挥来挥去~", "playing"),
+    ("{name}对着镜子做鬼脸，自己笑得前仰后合~", "happy"),
+    ("{name}叼着飞盘跑了好几圈！", "playing"),
+    ("{name}在阳台上看云，发现一朵像鱼的云~", "idle"),
+    ("{name}跟蚂蚁赛跑，结果蚂蚁赢了~", "playing"),
+]
+
+
 def _play_reply(old_mood, new_mood, pet_name, stamina):
     name = pet_name or "小企鹅"
-    k = _happy_kaomoji()
-    return f"{name}玩得好开心！{k}\n\u2764\ufe0f 心情：{_progress_bar(new_mood)} {new_mood}%\n\u26a1 体力：{_progress_bar(stamina)} {stamina}%"
+    activity, img = random.choice(PLAY_ACTIVITIES)
+    return (
+        f"{activity.format(name=name)}\n"
+        f"\u2764\ufe0f 心情：{_progress_bar(new_mood)} {new_mood}%\n"
+        f"\u26a1 体力：{_progress_bar(stamina)} {stamina}%",
+        img
+    )
 
 
 def _sleep_reply(pet_name):
@@ -696,6 +864,12 @@ def _extract_rename(text):
     return None
 
 
+def _is_question(text):
+    """检测是否为问句，避免问句误触发操作"""
+    question_endings = ("吗", "没", "呢", "吗？", "吗?", "没有", "了没", "了吗", "？", "?")
+    return any(text.endswith(q) for q in question_endings)
+
+
 def _rule_route(text):
     """规则路由，返回 {action, ...} 或 None。使用关键词包含匹配。"""
     text = text.strip()
@@ -705,18 +879,18 @@ def _rule_route(text):
 
     # 关键词包含匹配（只要文本里出现关键词就触发）
     # 治疗（必须在喂食之前，否则"吃药"会被喂食抢走）
-    for kw in ("治疗", "看医生", "治病", "吃药", "看病"):
+    for kw in ("治疗", "去医生", "治病", "吃药", "看病"):
         if kw in text:
             return {"action": "heal"}
 
-    for kw in ("喂食", "喂饭", "投喂"):
+    for kw in ("喂食", "喂宠物", "投喂"):
         if kw in text:
             return {"action": "feed"}
-    if text.startswith("吃") or text.startswith("喂"):
+    if (text.startswith("吃") or text.startswith("喂")) and not _is_question(text):
         return {"action": "feed"}
 
-    # 探险（必须在玩耍之前，否则"出去玩"会匹配到玩耍）
-    for kw in ("探险", "出去玩", "去冒险", "出门逛", "去探索", "出去逛逛"):
+    # 探险（只有明确说"探险/冒险/探索"才触发远征）
+    for kw in ("探险", "去冒险", "去探索"):
         if kw in text:
             return {"action": "explore"}
 
@@ -724,7 +898,8 @@ def _rule_route(text):
         if kw in text:
             return {"action": "bathe"}
 
-    for kw in ("玩耍", "陪玩", "玩游戏", "逗乐", "陪我玩"):
+    # 玩耍（包括"出去玩"——本地随机活动）
+    for kw in ("玩耍", "陪玩", "玩游戏", "逗乐", "陪我玩", "出去玩", "出门逛", "出去逛逛"):
         if kw in text:
             return {"action": "play"}
     if text in ("玩", "去玩"):
@@ -740,13 +915,27 @@ def _rule_route(text):
         if kw in text:
             return {"action": "achievements"}
 
-    for kw in ("看看", "状态", "怎么样", "你好吗", "你还好吗", "你饿吗"):
+    for kw in ("日记", "看日记", "日记本"):
+        if kw in text:
+            return {"action": "diary"}
+
+    for kw in ("收藏", "背包", "纪念品", "收集"):
+        if kw in text:
+            return {"action": "collection"}
+
+    for kw in ("看看", "状态", "你好吗", "你还好吗", "你饿吗"):
         if kw in text:
             return {"action": "status"}
 
     name = _extract_rename(text)
     if name:
         return {"action": "rename", "name": name}
+
+    # 主人自报姓名
+    import re as _re
+    m = _re.match(r"(?:我(?:的名字)?(?:是|叫)|叫我)(.{1,10})", text)
+    if m:
+        return {"action": "set_owner_name", "owner_name": m.group(1).strip()}
 
     return None
 
@@ -760,6 +949,15 @@ class MessageHandler:
         text = text.strip()
         if not text:
             return None
+        # 重启恢复：检测未完成的孵蛋/起名流程
+        if user_id not in self._user_state and self.store.pet is not None:
+            if self.store.pet.get("stage") == "egg" and not self.store.pet.get("name"):
+                self._user_state[user_id] = "ask_name"
+                return ("\U0001f95a 上次还没给宠物起名字呢~ 给它取个名字吧！", "hatching")
+            elif not self.store.owner.get("display_name"):
+                self._user_state[user_id] = "ask_owner_name"
+                pet_name = self.store.pet.get("name", "小企鹅")
+                return f"{pet_name}歪着头看着你：你希望我叫你什么呀？"
         if user_id in self._user_state:
             return self._handle_state(user_id, text)
         owner_id = self.store.owner.get("user_id")
@@ -772,12 +970,26 @@ class MessageHandler:
             remaining = self.store.sleep_remaining_min()
             name = self.store.pet.get("name", "小企鹅")
             return (f"{name}正在睡觉呢 (\u02d8\u03c9\u02d8) zzZ\n还要 {remaining} 分钟才醒哦~\n轻点，别吵醒宝宝~", "sleeping")
-        # 探险状态检查
+        # 探险状态检查：允许照顾类操作（喂食/洗澡/治疗/状态/聊天），只拦截冲突操作
         if self.store.is_exploring():
-            remaining = self.store.explore_remaining_min()
+            route = _rule_route(text)
+            if route and route["action"] in ("explore", "sleep"):
+                remaining = self.store.explore_remaining_min()
+                name = self.store.pet.get("name", "小企鹅")
+                location = self.store.pet.get("explore_location", "外面")
+                if route["action"] == "explore":
+                    return f"{name}已经在{location}探险了~ 还有 {remaining} 分钟回来"
+                else:
+                    return f"{name}在{location}探险呢，回来了再睡吧~"
+            # 其他操作正常放行到 _handle_normal
+        # 探险已过期但 scheduler 还没结算 → 立即结算，避免幻觉空窗
+        if self.store.pet.get("is_exploring") and not self.store.is_exploring():
+            result = self.store.finish_explore()
             name = self.store.pet.get("name", "小企鹅")
-            location = self.store.pet.get("explore_location", "外面")
-            return f"{name}正在{location}探险呢~ \u2728\n还有 {remaining} 分钟回来，等我带礼物哦！"
+            if result:
+                location, souvenir = result
+                souvenir_text = f"\n\U0001f381 还带回了纪念品：{souvenir}！" if souvenir else ""
+                return f"{name}刚从{location}回来！\u2728 玩得好开心~\n（正好收到你的消息啦！）{souvenir_text}"
         return self._handle_normal(user_id, text)
 
     def _handle_no_pet(self, user_id, text):
@@ -801,8 +1013,19 @@ class MessageHandler:
                 return "名字不能为空哦，再试试？"
             self.store.hatch(name)
             self.store.owner["name"] = name
+            self._user_state[user_id] = "ask_owner_name"
+            return f"\U0001f427 {name} 诞生了！\n\n{name}歪着头看着你：你希望我叫你什么呀？"
+        if state == "ask_owner_name":
+            owner_name = text.strip()
+            if len(owner_name) > 10:
+                return "名字太长啦，10个字以内哦~"
+            if not owner_name:
+                return "告诉我你的名字嘛~"
+            pet_name = self.store.pet.get("name", "小企鹅")
+            self.store.owner["display_name"] = owner_name
+            self.store._save()
             del self._user_state[user_id]
-            return f"\U0001f427 {name} 诞生了！\n\n它正好奇地看着你，肚子咕咕叫~\n发送「喂食」来喂它，发送「看看」查看状态！"
+            return f"好的{owner_name}！以后就这么叫你啦~ \u2764\ufe0f\n\n{pet_name}肚子咕咕叫~ 发送「喂食」来喂它，发送「看看」查看状态！"
         del self._user_state[user_id]
         return None
 
@@ -846,7 +1069,7 @@ class MessageHandler:
                     return "宠物还在蛋里呢~"
                 if result == "no_stamina":
                     return (_no_stamina_reply(name, pet.get("stamina", 0)), "tired")
-                return self._with_achievements((_play_reply(result[0], result[1], name, pet.get("stamina", 0)), "playing"), "play")
+                return self._with_achievements(_play_reply(result[0], result[1], name, pet.get("stamina", 0)), "play")
 
             if action == "sleep":
                 result = self.store.sleep()
@@ -883,29 +1106,63 @@ class MessageHandler:
                     return f"{name}已经在外面探险了~ 还有 {remaining} 分钟回来"
                 if result == "no_stamina":
                     return (_no_stamina_reply(name, pet.get("stamina", 0)), "tired")
-                location, until = result
-                return self._with_achievements(f"{name}背上小书包，向{location}出发了！\u2728\n{EXPLORE_DURATION_MIN}分钟后回来，会带故事回来哦~", "explore")
+                location, until, duration = result
+                if duration >= 60:
+                    time_desc = f"大约{duration // 60}小时{'多' if duration % 60 > 15 else ''}"
+                else:
+                    time_desc = f"大约{duration}分钟"
+                return self._with_achievements((f"{name}背上小书包，向{location}出发了！\u2728\n{location}{'有点远呢' if duration >= 60 else '不算太远'}，{time_desc}后回来，会带故事回来哦~", "idle"), "explore")
 
             if action == "achievements":
                 return self.store.format_achievements()
 
+            if action == "diary":
+                return self.store.format_diary()
+
+            if action == "collection":
+                return self.store.format_collection()
+
             if action == "status":
-                return format_status(pet)
+                # 根据综合状态选图
+                avg = sum(pet.get(s, 0) for s, _, _ in STAT_DISPLAY) / 5
+                if pet.get("health", 100) < 20:
+                    img = "sick"
+                elif avg >= 70:
+                    img = "happy"
+                elif avg >= 40:
+                    img = "idle"
+                else:
+                    img = "hungry"
+                return (format_status(pet), img)
 
             if action == "rename":
-                new_name = route["name"]
-                old_name = pet.get("name", "???")
-                self.store.rename(new_name)
-                return f"好的！从现在起叫 {new_name} 啦~ (之前叫{old_name})"
+                return "暂时不支持改名哦~"
+
+            if action == "set_owner_name":
+                owner_name = route["owner_name"]
+                self.store.owner["display_name"] = owner_name
+                self.store._save()
+                return f"知道啦！以后叫你{owner_name}~ \u2764\ufe0f"
 
         # AI 兜底（带对话记忆）
         try:
             from ai import parse_message
+            # 计算在一起天数
+            days_together = 0
+            stats = pet.get("stats", {})
+            if stats.get("active_dates"):
+                first_day = min(stats["active_dates"])
+                from datetime import datetime as _dt
+                days_together = (_dt.strptime(today_str(), "%Y-%m-%d") - _dt.strptime(first_day, "%Y-%m-%d")).days + 1
             pet_context = {
                 "name": name, "hunger": pet.get("hunger", 50),
                 "cleanliness": pet.get("cleanliness", 50), "mood": pet.get("mood", 50),
                 "stamina": pet.get("stamina", 50), "health": pet.get("health", 50),
                 "stage": pet.get("stage", "baby"), "level": pet.get("level", 1),
+                "is_exploring": pet.get("is_exploring", False),
+                "explore_location": pet.get("explore_location"),
+                "days_together": days_together,
+                "owner_name": self.store.owner.get("display_name", ""),
             }
             result = parse_message(text, pet_context, history=self.store.chat_history)
             if result and result.get("reply"):
@@ -938,72 +1195,87 @@ if __name__ == "__main__":
     store = PetStore(data_file=tmp)
     handler = MessageHandler(store=store)
 
+    def _text(r):
+        """提取回复文本（兼容 str 和 (text, img_key) tuple）"""
+        return r[0] if isinstance(r, tuple) else r
+
     print("=== 017Pet Phase 2 测试 ===\n")
 
-    # 孵蛋→取名
+    # 孵蛋→取名→主人称呼
     r = handler.handle_message("u1", "孵蛋")
     print(f"孵蛋: {r}")
     r = handler.handle_message("u1", "小雪")
     print(f"取名: {r}")
+    assert "叫你什么" in _text(r)  # 应该追问主人称呼
     assert store.pet["stage"] == "baby"
+    r = handler.handle_message("u1", "谷雨")
+    print(f"主人称呼: {r}")
+    assert store.owner.get("display_name") == "谷雨"
+    assert "谷雨" in _text(r)
     assert store.pet["cleanliness"] == 100
 
-    # 喂食
+    # 喂食（恢复量随机 20-40）
     store.pet["hunger"] = 40
     store._save()
     r = handler.handle_message("u1", "喂食")
     print(f"喂食: {r}")
-    assert store.pet["hunger"] == 70
+    assert 60 <= store.pet["hunger"] <= 80
     assert store.pet["xp"] > 0
 
-    # 洗澡
+    # 洗澡（恢复量随机 25-45）
     store.pet["cleanliness"] = 50
     store._save()
     r = handler.handle_message("u1", "洗澡")
     print(f"洗澡: {r}")
-    assert store.pet["cleanliness"] == 85
-    assert "清洁" in r
+    assert 75 <= store.pet["cleanliness"] <= 95
+    assert "清洁" in _text(r)
 
     # 玩耍
     r = handler.handle_message("u1", "玩")
     print(f"玩耍: {r}")
-    assert "心情" in r
+    assert "心情" in _text(r)
     assert store.pet["stamina"] < 100
 
-    # 睡觉
+    # 睡觉（体力在醒来后才恢复，此处只检查进入睡眠状态）
     r = handler.handle_message("u1", "睡觉")
     print(f"睡觉: {r}")
-    assert store.pet["stamina"] == 100
+    assert store.pet["is_sleeping"] is True
+
+    # 手动唤醒以继续测试
+    store.pet["is_sleeping"] = False
+    store.pet["stamina"] = 100
+    store._save()
 
     # 体力不足
     store.pet["stamina"] = 10
     store._save()
     r = handler.handle_message("u1", "玩")
     print(f"体力不足: {r}")
-    assert "累" in r or "睡觉" in r
+    assert "累" in _text(r) or "睡觉" in _text(r)
 
-    # 治疗
+    # 治疗（恢复量随机 30-50）
     store.pet["health"] = 30
     store._save()
     r = handler.handle_message("u1", "治疗")
     print(f"治疗: {r}")
-    assert store.pet["health"] == 70
-    assert "健康" in r
+    assert 60 <= store.pet["health"] <= 80
+    assert "健康" in _text(r)
 
     # 状态显示
     r = handler.handle_message("u1", "看看")
-    print(f"状态:\n{r}")
-    assert "饱腹" in r and "清洁" in r and "心情" in r and "体力" in r and "健康" in r
-    assert "Lv." in r
+    print(f"状态:\n{_text(r)}")
+    assert "饱腹" in _text(r) and "清洁" in _text(r) and "心情" in _text(r)
+    assert "Lv." in _text(r)
 
-    # 改名
+    # 改名（已禁用）
     r = handler.handle_message("u1", "改名小冰")
     print(f"改名: {r}")
-    assert store.pet["name"] == "小冰"
+    assert "不支持" in _text(r)
+    assert store.pet["name"] == "小雪"  # 名字不变
 
     # 单主人
     r = handler.handle_message("u2", "看看")
-    assert "主人" in r
+    assert "主人" in _text(r)
 
     # decay_all tick 机制
     store.pet["hunger"] = 80

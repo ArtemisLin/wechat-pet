@@ -11,6 +11,7 @@ import random
 import base64
 import os
 import socket
+from datetime import datetime, timedelta
 from urllib.request import Request, build_opener, ProxyHandler
 from urllib.error import HTTPError, URLError
 
@@ -53,7 +54,12 @@ def _api_request(method, path, body=None, headers=None, timeout=10):
     try:
         with _opener.open(req, timeout=timeout) as resp:
             raw = resp.read()
-            return json.loads(raw.decode("utf-8")) if raw else {}
+            result = json.loads(raw.decode("utf-8")) if raw else {}
+            ret = result.get("ret")
+            if ret is not None and ret != 0:
+                print(f"  API ret={ret}: {path}")
+                result["_ret_error"] = ret
+            return result
     except HTTPError as e:
         body_text = e.read().decode("utf-8", errors="replace")
         print(f"  HTTP {e.code}: {body_text[:200]}")
@@ -146,10 +152,22 @@ def send_message(state, to_user_id, context_token, text):
     resp = _api_request("POST", "/ilink/bot/sendmessage", body=body,
                         headers=_make_headers(state["bot_token"]))
     # sendmessage 成功时响应体可能为空 {}，视为成功
-    if resp is not None and "error" not in resp and "timeout" not in resp:
+    if resp is not None and "error" not in resp and "timeout" not in resp and "_ret_error" not in resp:
         return True
     print(f"  发送失败: {resp}")
     return False
+
+
+def _is_token_fresh(info, max_hours=20):
+    """检查缓存的 context_token 是否在有效期内（默认 20h，留 4h 安全余量）"""
+    cached_time = info.get("time")
+    if not cached_time:
+        return False
+    try:
+        cached_dt = datetime.strptime(cached_time, "%Y-%m-%d %H:%M:%S")
+        return datetime.now() - cached_dt < timedelta(hours=max_hours)
+    except (ValueError, TypeError):
+        return False
 
 
 def _send_to_user(state, user_id, text):
@@ -157,17 +175,37 @@ def _send_to_user(state, user_id, text):
     cached = state.get("cached_tokens", {})
     info = cached.get(user_id)
     if info:
+        if not _is_token_fresh(info):
+            print(f"  主动发送→{user_id[:15]}: 跳过（token 已超 20h，等用户下次发消息刷新）")
+            return False
         ok = send_message(state, user_id, info["context_token"], text)
         print(f"  主动发送→{user_id[:15]}: {'✓' if ok else '✗'}")
         return ok
     return False
 
 
+def _resolve_image_path(image_key):
+    """解析图片路径，支持变体随机选择。
+    有变体时从 {key}.png + {key}_1.png, {key}_2.png... 全部候选中随机选。
+    """
+    import glob
+    single = os.path.join(ASSETS_DIR, f"{image_key}.png")
+    variants = glob.glob(os.path.join(ASSETS_DIR, f"{image_key}_*.png"))
+    if variants:
+        candidates = variants[:]
+        if os.path.exists(single):
+            candidates.append(single)
+        return random.choice(candidates)
+    if os.path.exists(single):
+        return single
+    return None
+
+
 def _send_image_by_key(state, user_id, context_token, image_key):
-    """根据 image_key 发送对应的素材图片"""
-    img_path = os.path.join(ASSETS_DIR, f"{image_key}.png")
-    if not os.path.exists(img_path):
-        print(f"  素材不存在: {img_path}")
+    """根据 image_key 发送对应的素材图片（支持变体随机）"""
+    img_path = _resolve_image_path(image_key)
+    if not img_path:
+        print(f"  素材不存在: {image_key}")
         return False
     try:
         from image import send_image_file
@@ -202,8 +240,9 @@ def run_loop(state, on_message=None):
 
             if not resp or resp.get("timeout"):
                 continue
-            if "error" in resp:
-                if resp.get("ret") == -14:
+            if "error" in resp or "_ret_error" in resp:
+                ret_val = resp.get("_ret_error") or resp.get("ret")
+                if ret_val == -14:
                     print("  Session 过期，需要重新登录")
                     return
                 time.sleep(2)
@@ -295,19 +334,28 @@ def start():
     def send_image_fn(user_id, image_key):
         cached = state.get("cached_tokens", {})
         info = cached.get(user_id)
-        if info:
+        if info and _is_token_fresh(info):
             _send_image_by_key(state, user_id, info["context_token"], image_key)
 
     scheduler = create_scheduler(store, send_fn, send_image_fn)
     scheduler.start()
     atexit.register(lambda: scheduler.shutdown(wait=False))
 
-    print(f"\n=== 017Pet 已启动 (Phase 2) ===")
+    from config import AI_API_KEY, AI_BASE_URL
+    if not AI_API_KEY or AI_API_KEY in ("your_api_key", "your_deepseek_api_key_here"):
+        print("\n  ⚠️  AI_API_KEY 未配置！宠物基础互动正常，但 AI 闲聊/日记/周报不可用。")
+        print("     请在 pet/.env 中设置你的 API Key。")
+    if not AI_BASE_URL:
+        print("\n  ⚠️  AI_BASE_URL 未配置！AI 功能不可用。")
+
+    print(f"\n=== 017Pet 已启动 ===")
     print(f"  状态衰减: 每{DECAY_INTERVAL_MIN}分钟")
     print(f"  调度器: APScheduler")
 
     def on_message(user_id, text, is_voice):
         try:
+            from scheduler import mark_user_interaction
+            mark_user_interaction()
             return handler.handle_message(user_id, text, is_voice)
         except Exception as e:
             print(f"  处理异常: {e}")

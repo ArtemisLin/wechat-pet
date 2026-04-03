@@ -60,7 +60,6 @@ Edit `pet/.env`:
 AI_API_KEY=your_deepseek_api_key_here
 AI_BASE_URL=https://api.deepseek.com/chat/completions
 AI_MODEL=deepseek-chat
-BOT_NAME=my_pet
 TIMEZONE=Asia/Shanghai
 ```
 
@@ -98,7 +97,6 @@ Send messages to the ClawBot in WeChat:
 | 出去玩吧 / 探险 | Send pet on a 30-min adventure |
 | 看看 / 状态 | Check pet stats |
 | 成就 | View achievements |
-| 改名XX | Rename your pet |
 
 Or just chat — the AI will respond in character!
 

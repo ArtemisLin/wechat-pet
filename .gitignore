@@ -7,3 +7,6 @@ ilink_state.json
 *.bak
 test_*.png
 test_*.gif
+.superpowers/
+pet/pet_data_backup_*.json
+pet/data/

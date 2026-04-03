@@ -4,6 +4,7 @@
 
 import json
 import os
+import socket
 from urllib.request import Request, build_opener, ProxyHandler
 from urllib.error import HTTPError, URLError
 
@@ -63,7 +64,28 @@ def _build_system_prompt(pet_context):
 
     time_ctx = _get_time_context()
 
+    # 探险状态
+    is_exploring = pet_context.get("is_exploring", False)
+    explore_location = pet_context.get("explore_location")
+    if is_exploring and explore_location:
+        explore_desc = f"你正在「{explore_location}」探险中！你应该描述你在{explore_location}的所见所闻，告诉主人你在这里玩得开心"
+    else:
+        explore_desc = None
+
+    # 称呼进化
+    days = pet_context.get("days_together", 0)
+    owner_name = pet_context.get("owner_name", "")
+    if days >= 14 and owner_name:
+        nickname_rule = f"你和主人已经在一起{days}天了，关系很亲密。你叫主人「{owner_name}」，偶尔撒娇时可以叫「{owner_name}哥哥」或自己发明亲昵昵称"
+    elif days >= 7 and owner_name:
+        nickname_rule = f"你和主人在一起{days}天了，越来越亲近。你叫主人「{owner_name}」"
+    elif days >= 3 and owner_name:
+        nickname_rule = f"你和主人在一起{days}天了，开始熟悉了。你叫主人「{owner_name}」而不是「主人」"
+    else:
+        nickname_rule = "你叫对方「主人」"
+
     return f"""你是一只叫「{name}」的小企鹅宠物（Lv.{level}）。性格：贪吃、偶尔撒娇、好奇心旺盛、说话简短可爱。
+{nickname_rule}
 
 当前状态：
 - 饱腹值：{hunger}%
@@ -73,6 +95,7 @@ def _build_system_prompt(pet_context):
 - 健康值：{health}%
 - 综合感受：{mood_desc}
 - 时间：{time_ctx}
+{f"- 🗺️ 探险中：{explore_desc}" if explore_desc else ""}
 
 规则：
 1. 用1-2句话回应，保持简短
@@ -129,11 +152,14 @@ def parse_message(text, pet_context, history=None):
             err_body = e.read().decode("utf-8", errors="replace")
             print(f"  AI API Error HTTP {e.code}: {err_body[:200]}")
             return None
-        except Exception as e:
+        except (socket.timeout, TimeoutError, URLError) as e:
             if attempt < 1:
                 import time as t
                 t.sleep(1)
                 continue
+            print(f"  AI API 超时/网络错误: {e}")
+            return None
+        except Exception as e:
             print(f"  AI API 调用失败: {e}")
             return None
     return None
