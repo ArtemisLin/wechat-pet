@@ -736,6 +736,18 @@ def format_status(pet):
     else:
         lines.append(f"\u2b50 经验 {xp} （已满级！）")
 
+    # 性格标签（Phase 2）
+    traits = pet.get("traits", {})
+    if traits:
+        tags = _trait_tags(traits)
+        lines.append(f"🎭 性格：{tags}")
+
+    intimacy = pet.get("intimacy", 0.3)
+    hearts = "❤️" * int(intimacy * 5)
+    if not hearts:
+        hearts = "🤍"
+    lines.append(f"💕 亲密度：{hearts}")
+
     # 成就统计
     achs = pet.get("achievements", {})
     done = len(achs)
