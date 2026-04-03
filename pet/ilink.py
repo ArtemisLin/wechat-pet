@@ -27,7 +27,15 @@ from config import ILINK_STATE_FILE, TIMEZONE, DECAY_INTERVAL_MIN
 from pathlib import Path
 
 BASE_URL = "https://ilinkai.weixin.qq.com"
-ASSETS_DIR = str(Path(__file__).parent.parent / "assets" / "penguin")
+ASSETS_BASE = Path(__file__).parent.parent / "assets"
+
+
+def _get_assets_dir(species_id="penguin"):
+    """按品种返回素材目录。如果品种目录不存在，fallback 到 penguin。"""
+    species_dir = ASSETS_BASE / species_id
+    if species_dir.is_dir():
+        return str(species_dir)
+    return str(ASSETS_BASE / "penguin")
 
 
 # ============================================================
@@ -184,13 +192,14 @@ def _send_to_user(state, user_id, text):
     return False
 
 
-def _resolve_image_path(image_key):
+def _resolve_image_path(image_key, species_id="penguin"):
     """解析图片路径，支持变体随机选择。
     有变体时从 {key}.png + {key}_1.png, {key}_2.png... 全部候选中随机选。
     """
     import glob
-    single = os.path.join(ASSETS_DIR, f"{image_key}.png")
-    variants = glob.glob(os.path.join(ASSETS_DIR, f"{image_key}_*.png"))
+    assets_dir = _get_assets_dir(species_id)
+    single = os.path.join(assets_dir, f"{image_key}.png")
+    variants = glob.glob(os.path.join(assets_dir, f"{image_key}_*.png"))
     if variants:
         candidates = variants[:]
         if os.path.exists(single):
@@ -201,9 +210,9 @@ def _resolve_image_path(image_key):
     return None
 
 
-def _send_image_by_key(state, user_id, context_token, image_key):
+def _send_image_by_key(state, user_id, context_token, image_key, species_id="penguin"):
     """根据 image_key 发送对应的素材图片（支持变体随机）"""
-    img_path = _resolve_image_path(image_key)
+    img_path = _resolve_image_path(image_key, species_id)
     if not img_path:
         print(f"  素材不存在: {image_key}")
         return False
@@ -295,13 +304,19 @@ def run_loop(state, on_message=None):
                     if on_message:
                         reply = on_message(user_id, text, is_voice)
                         if reply:
-                            # 支持 (text, image_key) 元组或纯 str
-                            reply_text, image_key = (reply, None) if isinstance(reply, str) else reply
+                            # 支持 (text, image_key, species_id) / (text, image_key) / str
+                            if isinstance(reply, str):
+                                reply_text, image_key, species_id = reply, None, "penguin"
+                            elif len(reply) == 3:
+                                reply_text, image_key, species_id = reply
+                            else:
+                                reply_text, image_key = reply
+                                species_id = "penguin"
                             ok = send_message(state, user_id, context_token, reply_text)
                             print(f"  回复: {reply_text[:60]}{'...' if len(reply_text)>60 else ''}")
                             print(f"  {'✓' if ok else '✗'}")
                             if image_key:
-                                _send_image_by_key(state, user_id, context_token, image_key)
+                                _send_image_by_key(state, user_id, context_token, image_key, species_id)
 
     except KeyboardInterrupt:
         print("\n\n  宠物已休息 👋")
@@ -314,11 +329,13 @@ def start():
     """正式启动：APScheduler 管调度，轮询只管收发消息"""
     import atexit
     from apscheduler.schedulers.background import BackgroundScheduler
+    from config import DATA_DIR
+    from store import PetRegistry
     from core import MessageHandler
     from scheduler import create_scheduler
 
-    handler = MessageHandler()
-    store = handler.store
+    registry = PetRegistry(str(DATA_DIR))
+    handler = MessageHandler(registry=registry)
     state = load_state()
 
     if not state.get("bot_token"):
@@ -331,13 +348,13 @@ def start():
     def send_fn(user_id, text):
         _send_to_user(state, user_id, text)
 
-    def send_image_fn(user_id, image_key):
+    def send_image_fn(user_id, image_key, species_id="penguin"):
         cached = state.get("cached_tokens", {})
         info = cached.get(user_id)
         if info and _is_token_fresh(info):
-            _send_image_by_key(state, user_id, info["context_token"], image_key)
+            _send_image_by_key(state, user_id, info["context_token"], image_key, species_id)
 
-    scheduler = create_scheduler(store, send_fn, send_image_fn)
+    scheduler = create_scheduler(registry, send_fn, send_image_fn)
     scheduler.start()
     atexit.register(lambda: scheduler.shutdown(wait=False))
 
@@ -348,15 +365,25 @@ def start():
     if not AI_BASE_URL:
         print("\n  ⚠️  AI_BASE_URL 未配置！AI 功能不可用。")
 
-    print(f"\n=== 017Pet 已启动 ===")
+    active = registry.all_active_stores()
+    print(f"\n=== 017Pet V2 已启动 ===")
+    print(f"  已注册用户: {len(active)}")
     print(f"  状态衰减: 每{DECAY_INTERVAL_MIN}分钟")
     print(f"  调度器: APScheduler")
 
     def on_message(user_id, text, is_voice):
         try:
             from scheduler import mark_user_interaction
-            mark_user_interaction()
-            return handler.handle_message(user_id, text, is_voice)
+            mark_user_interaction(user_id)
+            reply = handler.handle_message(user_id, text, is_voice)
+            # 如果回复包含图片 key，获取用户品种用于素材路径
+            if isinstance(reply, tuple) and len(reply) == 2:
+                text_reply, image_key = reply
+                user_store = registry.get_or_create(user_id)
+                species_id = user_store.get_species_id() or "penguin"
+                # 返回 3 元组让 run_loop 里的发送逻辑知道品种
+                return (text_reply, image_key, species_id)
+            return reply
         except Exception as e:
             print(f"  处理异常: {e}")
             import traceback

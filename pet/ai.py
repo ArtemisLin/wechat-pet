@@ -35,8 +35,13 @@ def _get_time_context():
         return "现在是凌晨，主人还没睡！应该关心主人为什么这么晚还没睡"
 
 
-def _build_system_prompt(pet_context):
-    name = pet_context.get("name", "小企鹅")
+def _build_system_prompt(pet_context, species_id="penguin"):
+    from species import get_species
+    spec = get_species(species_id) or get_species("penguin")
+    species_name = spec["name"]
+    personality_hint = spec["personality_hint"]
+
+    name = pet_context.get("name", species_name)
     hunger = pet_context.get("hunger", 50)
     cleanliness = pet_context.get("cleanliness", 50)
     mood = pet_context.get("mood", 50)
@@ -84,7 +89,8 @@ def _build_system_prompt(pet_context):
     else:
         nickname_rule = "你叫对方「主人」"
 
-    return f"""你是一只叫「{name}」的小企鹅宠物（Lv.{level}）。性格：贪吃、偶尔撒娇、好奇心旺盛、说话简短可爱。
+    return f"""你是一只叫「{name}」的{species_name}宠物（Lv.{level}）。
+说话风格：{personality_hint}
 {nickname_rule}
 
 当前状态：
@@ -99,8 +105,8 @@ def _build_system_prompt(pet_context):
 
 规则：
 1. 用1-2句话回应，保持简短
-2. 说话风格可爱，偶尔用颜文字
-3. 保持小企鹅角色不要破
+2. 说话风格符合你的品种个性，偶尔用颜文字
+3. 保持{species_name}角色不要破
 4. 如果主人提到吃的/食物，表现出很馋的样子
 5. 如果生病了，表现出虚弱的样子
 6. 如果脏了，表现出不舒服想洗澡的样子
@@ -109,15 +115,16 @@ def _build_system_prompt(pet_context):
 9. 不要返回markdown，只返回纯JSON"""
 
 
-def parse_message(text, pet_context, history=None):
+def parse_message(text, pet_context, history=None, species_id="penguin"):
     """
     调用 AI 生成宠物回复。
     history: [{"role":"user","content":"..."}, {"role":"assistant","content":"..."}]
+    species_id: 品种 ID，影响 system prompt 中的品种描述和语言风格
     """
     if not AI_API_KEY or not AI_BASE_URL:
         return None
 
-    system_prompt = _build_system_prompt(pet_context)
+    system_prompt = _build_system_prompt(pet_context, species_id=species_id)
     messages = [{"role": "system", "content": system_prompt}]
 
     # 加入对话历史

@@ -8,7 +8,7 @@ import threading
 import random
 
 from config import (
-    PET_DATA_FILE, now_str, today_str, now,
+    now_str, today_str, now,
     HUNGER_DECAY_RATE, HUNGER_ALERT_THRESHOLD,
     STAT_CONFIG, PLAY_STAMINA_COST, HEALTH_DECAY_RATE, HEALTH_RESTORE_AMOUNT,
     XP_REWARDS, GROWTH_STAGES, SLEEP_DURATION_MIN, EXPLORE_DURATION_MIN,
@@ -47,10 +47,30 @@ ACHIEVEMENTS = {
 
 
 # ============================================================
+# 探险地点（模块级，store.py 也会 import）
+# ============================================================
+EXPLORE_LOCATIONS = {
+    "花园":       (20, 40),
+    "湖边":       (20, 40),
+    "小镇集市":   (40, 70),
+    "森林":       (40, 70),
+    "海边":       (60, 90),
+    "山顶":       (60, 90),
+    "雪山":       (80, 120),
+    "沙漠绿洲":   (80, 120),
+    "古老图书馆": (90, 120),
+    "神秘洞穴":   (90, 120),
+}
+
+
+# ============================================================
 # 数据层
 # ============================================================
 class PetStore:
-    """宠物数据存储，线程安全"""
+    """V1 遗留类，仅用于数据迁移和本地测试。新代码请使用 store.py 的 UserPetStore。
+
+    DEPRECATED: 将在 Phase 1 完成后移除。
+    """
 
     def __init__(self, data_file=None):
         self.data_file = data_file or PET_DATA_FILE
@@ -277,22 +297,6 @@ class PetStore:
         remaining = (wake_time - now()).total_seconds() / 60
         return max(0, int(remaining))
 
-    # --- 探险 ---
-
-    # 地点 → 探险时长范围 (min, max) 分钟
-    EXPLORE_LOCATIONS = {
-        "花园":       (20, 40),
-        "湖边":       (20, 40),
-        "小镇集市":   (40, 70),
-        "森林":       (40, 70),
-        "海边":       (60, 90),
-        "山顶":       (60, 90),
-        "雪山":       (80, 120),
-        "沙漠绿洲":   (80, 120),
-        "古老图书馆": (90, 120),
-        "神秘洞穴":   (90, 120),
-    }
-
     def start_explore(self):
         """出发探险，返回 (location, explore_until, duration_min) 或 None 或 "no_stamina" 或 "busy" """
         with self._lock:
@@ -305,8 +309,8 @@ class PetStore:
             if self.pet.get("stamina", 0) < 20:
                 return "no_stamina"
             from datetime import timedelta
-            location = random.choice(list(self.EXPLORE_LOCATIONS.keys()))
-            min_dur, max_dur = self.EXPLORE_LOCATIONS[location]
+            location = random.choice(list(EXPLORE_LOCATIONS.keys()))
+            min_dur, max_dur = EXPLORE_LOCATIONS[location]
             duration = random.randint(min_dur, max_dur)
             return_time = now() + timedelta(minutes=duration)
             self.pet["is_exploring"] = True
@@ -941,51 +945,56 @@ def _rule_route(text):
 
 
 class MessageHandler:
-    def __init__(self, store=None):
-        self.store = store or PetStore()
+    def __init__(self, registry=None, store=None):
+        # V2: 优先使用 registry（多用户），兼容 V1 store（本地测试）
+        self._registry = registry
+        self._legacy_store = store
         self._user_state = {}
+
+    def _get_store(self, user_id):
+        """获取 user 对应的 store 实例"""
+        if self._registry:
+            return self._registry.get_or_create(user_id)
+        return self._legacy_store
 
     def handle_message(self, user_id, text, is_voice=False):
         text = text.strip()
         if not text:
             return None
+        store = self._get_store(user_id)
         # 重启恢复：检测未完成的孵蛋/起名流程
-        if user_id not in self._user_state and self.store.pet is not None:
-            if self.store.pet.get("stage") == "egg" and not self.store.pet.get("name"):
+        if user_id not in self._user_state and store.pet is not None:
+            if store.pet.get("stage") == "egg" and not store.pet.get("name"):
                 self._user_state[user_id] = "ask_name"
                 return ("\U0001f95a 上次还没给宠物起名字呢~ 给它取个名字吧！", "hatching")
-            elif not self.store.owner.get("display_name"):
+            elif not store.owner.get("display_name"):
                 self._user_state[user_id] = "ask_owner_name"
-                pet_name = self.store.pet.get("name", "小企鹅")
+                pet_name = store.get_pet_name() if hasattr(store, 'get_pet_name') else store.pet.get("name", "宠物")
                 return f"{pet_name}歪着头看着你：你希望我叫你什么呀？"
         if user_id in self._user_state:
             return self._handle_state(user_id, text)
-        owner_id = self.store.owner.get("user_id")
-        if owner_id and owner_id != user_id:
-            return "我已经有主人啦~ (\u30fb\u03c9\u30fb)"
-        if self.store.pet is None:
+        if store.pet is None:
             return self._handle_no_pet(user_id, text)
         # 睡眠状态检查
-        if self.store.is_sleeping():
-            remaining = self.store.sleep_remaining_min()
-            name = self.store.pet.get("name", "小企鹅")
+        if store.is_sleeping():
+            remaining = store.sleep_remaining_min() if hasattr(store, 'sleep_remaining_min') else 0
+            name = store.get_pet_name() if hasattr(store, 'get_pet_name') else store.pet.get("name", "宠物")
             return (f"{name}正在睡觉呢 (\u02d8\u03c9\u02d8) zzZ\n还要 {remaining} 分钟才醒哦~\n轻点，别吵醒宝宝~", "sleeping")
-        # 探险状态检查：允许照顾类操作（喂食/洗澡/治疗/状态/聊天），只拦截冲突操作
-        if self.store.is_exploring():
+        # 探险状态检查：允许照顾类操作，只拦截冲突操作
+        if store.is_exploring():
             route = _rule_route(text)
             if route and route["action"] in ("explore", "sleep"):
-                remaining = self.store.explore_remaining_min()
-                name = self.store.pet.get("name", "小企鹅")
-                location = self.store.pet.get("explore_location", "外面")
+                remaining = store.explore_remaining_min() if hasattr(store, 'explore_remaining_min') else 0
+                name = store.get_pet_name() if hasattr(store, 'get_pet_name') else store.pet.get("name", "宠物")
+                location = store.pet.get("explore_location", "外面")
                 if route["action"] == "explore":
                     return f"{name}已经在{location}探险了~ 还有 {remaining} 分钟回来"
                 else:
                     return f"{name}在{location}探险呢，回来了再睡吧~"
-            # 其他操作正常放行到 _handle_normal
-        # 探险已过期但 scheduler 还没结算 → 立即结算，避免幻觉空窗
-        if self.store.pet.get("is_exploring") and not self.store.is_exploring():
-            result = self.store.finish_explore()
-            name = self.store.pet.get("name", "小企鹅")
+        # 探险已过期但 scheduler 还没结算 → 立即结算
+        if store.pet.get("is_exploring") and not store.is_exploring():
+            result = store.finish_explore()
+            name = store.get_pet_name() if hasattr(store, 'get_pet_name') else store.pet.get("name", "宠物")
             if result:
                 location, souvenir = result
                 souvenir_text = f"\n\U0001f381 还带回了纪念品：{souvenir}！" if souvenir else ""
@@ -999,11 +1008,22 @@ class MessageHandler:
         return "还没有宠物呢~ 发送「孵蛋」领养一只吧！"
 
     def _start_hatch(self, user_id):
-        self.store.create_egg(user_id, "")
+        store = self._get_store(user_id)
+        from species import random_species, get_species
+        species_id = random_species()
+        try:
+            store.create_egg(user_id, "", species_id)
+        except TypeError:
+            # V1 PetStore.create_egg 只接受 2 个参数
+            store.create_egg(user_id, "")
+        spec = get_species(species_id)
+        species_name = spec["name"] if spec else "小宠物"
+        species_emoji = spec["emoji"] if spec else "🐾"
         self._user_state[user_id] = "ask_name"
-        return ("\U0001f95a 蛋裂开了！一只小企鹅探出了头~\n\n给它起个名字吧！", "hatching")
+        return (f"\U0001f95a 蛋裂开了！一只{species_name}探出了头~ {species_emoji}\n\n给它起个名字吧！", "hatching")
 
     def _handle_state(self, user_id, text):
+        store = self._get_store(user_id)
         state = self._user_state.get(user_id)
         if state == "ask_name":
             name = text.strip()
@@ -1011,27 +1031,34 @@ class MessageHandler:
                 return "名字太长啦，10个字以内哦~"
             if not name:
                 return "名字不能为空哦，再试试？"
-            self.store.hatch(name)
-            self.store.owner["name"] = name
+            store.hatch(name)
+            store.owner["name"] = name
             self._user_state[user_id] = "ask_owner_name"
-            return f"\U0001f427 {name} 诞生了！\n\n{name}歪着头看着你：你希望我叫你什么呀？"
+            # 获取品种 emoji
+            species_emoji = "🐧"
+            if hasattr(store, 'get_species_id'):
+                from species import get_species
+                spec = get_species(store.get_species_id())
+                if spec:
+                    species_emoji = spec["emoji"]
+            return f"{species_emoji} {name} 诞生了！\n\n{name}歪着头看着你：你希望我叫你什么呀？"
         if state == "ask_owner_name":
             owner_name = text.strip()
             if len(owner_name) > 10:
                 return "名字太长啦，10个字以内哦~"
             if not owner_name:
                 return "告诉我你的名字嘛~"
-            pet_name = self.store.pet.get("name", "小企鹅")
-            self.store.owner["display_name"] = owner_name
-            self.store._save()
+            pet_name = store.get_pet_name() if hasattr(store, 'get_pet_name') else store.pet.get("name", "宠物")
+            store.owner["display_name"] = owner_name
+            store._save()
             del self._user_state[user_id]
             return f"好的{owner_name}！以后就这么叫你啦~ \u2764\ufe0f\n\n{pet_name}肚子咕咕叫~ 发送「喂食」来喂它，发送「看看」查看状态！"
         del self._user_state[user_id]
         return None
 
-    def _with_achievements(self, reply, action):
+    def _with_achievements(self, store, reply, action):
         """在回复后附加成就通知"""
-        unlocked = self.store.record_action(action)
+        unlocked = store.record_action(action)
         if not unlocked:
             return reply
         ach_text = "\n".join(f"\n\U0001f3c6 成就解锁：{a['name']}！（{a['desc']}）+{a['xp']}XP" for a in unlocked)
@@ -1041,9 +1068,10 @@ class MessageHandler:
 
     def _handle_normal(self, user_id, text):
         """返回 str 或 (str, image_key) 元组"""
+        store = self._get_store(user_id)
         route = _rule_route(text)
-        pet = self.store.pet
-        name = pet.get("name", "小企鹅")
+        pet = store.pet
+        name = store.get_pet_name() if hasattr(store, 'get_pet_name') else pet.get("name", "宠物")
 
         if route:
             action = route["action"]
@@ -1052,41 +1080,41 @@ class MessageHandler:
                 return f"你已经有 {name} 了呀~ (\u30fb\u03c9\u30fb)"
 
             if action == "feed":
-                result = self.store.feed()
+                result = store.feed()
                 if result is None:
                     return "宠物还在蛋里呢~"
-                return self._with_achievements((_feed_reply(result[0], result[1], name), "eating"), "feed")
+                return self._with_achievements(store, (_feed_reply(result[0], result[1], name), "eating"), "feed")
 
             if action == "bathe":
-                result = self.store.bathe()
+                result = store.bathe()
                 if result is None:
                     return "宠物还在蛋里呢~"
-                return self._with_achievements((_bathe_reply(result[0], result[1], name), "bathing"), "bathe")
+                return self._with_achievements(store, (_bathe_reply(result[0], result[1], name), "bathing"), "bathe")
 
             if action == "play":
-                result = self.store.play()
+                result = store.play()
                 if result is None:
                     return "宠物还在蛋里呢~"
                 if result == "no_stamina":
                     return (_no_stamina_reply(name, pet.get("stamina", 0)), "tired")
-                return self._with_achievements(_play_reply(result[0], result[1], name, pet.get("stamina", 0)), "play")
+                return self._with_achievements(store, _play_reply(result[0], result[1], name, pet.get("stamina", 0)), "play")
 
             if action == "sleep":
-                result = self.store.sleep()
+                result = store.sleep()
                 if result is None:
                     return "宠物还在蛋里呢~"
                 if result == "already_sleeping":
-                    remaining = self.store.sleep_remaining_min()
+                    remaining = store.sleep_remaining_min() if hasattr(store, 'sleep_remaining_min') else 0
                     return (f"{name}已经在睡觉了~ 还有 {remaining} 分钟醒来", "sleeping")
-                return self._with_achievements((f"{name}打了个哈欠，钻进被窝睡着了~ (\u02d8\u03c9\u02d8) zzZ\n{SLEEP_DURATION_MIN}分钟后醒来~", "sleeping"), "sleep")
+                return self._with_achievements(store, (f"{name}打了个哈欠，钻进被窝睡着了~ (\u02d8\u03c9\u02d8) zzZ\n{SLEEP_DURATION_MIN}分钟后醒来~", "sleeping"), "sleep")
 
             if action == "heal":
-                result = self.store.heal()
+                result = store.heal()
                 if result is None:
                     return "宠物还在蛋里呢~"
-                reply = self._with_achievements((_heal_reply(result[0], result[1], name), "healing"), "heal")
+                reply = self._with_achievements(store, (_heal_reply(result[0], result[1], name), "healing"), "heal")
                 # 绝处逢生成就
-                revive = self.store.check_health_achievement()
+                revive = store.check_health_achievement()
                 if revive:
                     ach_text = f"\n\U0001f3c6 成就解锁：{revive['name']}！（{revive['desc']}）+{revive['xp']}XP"
                     if isinstance(reply, tuple):
@@ -1096,13 +1124,13 @@ class MessageHandler:
                 return reply
 
             if action == "explore":
-                result = self.store.start_explore()
+                result = store.start_explore()
                 if result is None:
                     return "宠物还在蛋里呢~"
                 if result == "sleeping":
                     return f"{name}在睡觉呢，醒了再出去吧~"
                 if result == "already_exploring":
-                    remaining = self.store.explore_remaining_min()
+                    remaining = store.explore_remaining_min() if hasattr(store, 'explore_remaining_min') else 0
                     return f"{name}已经在外面探险了~ 还有 {remaining} 分钟回来"
                 if result == "no_stamina":
                     return (_no_stamina_reply(name, pet.get("stamina", 0)), "tired")
@@ -1111,16 +1139,16 @@ class MessageHandler:
                     time_desc = f"大约{duration // 60}小时{'多' if duration % 60 > 15 else ''}"
                 else:
                     time_desc = f"大约{duration}分钟"
-                return self._with_achievements((f"{name}背上小书包，向{location}出发了！\u2728\n{location}{'有点远呢' if duration >= 60 else '不算太远'}，{time_desc}后回来，会带故事回来哦~", "idle"), "explore")
+                return self._with_achievements(store, (f"{name}背上小书包，向{location}出发了！\u2728\n{location}{'有点远呢' if duration >= 60 else '不算太远'}，{time_desc}后回来，会带故事回来哦~", "idle"), "explore")
 
             if action == "achievements":
-                return self.store.format_achievements()
+                return store.format_achievements()
 
             if action == "diary":
-                return self.store.format_diary()
+                return store.format_diary()
 
             if action == "collection":
-                return self.store.format_collection()
+                return store.format_collection()
 
             if action == "status":
                 # 根据综合状态选图
@@ -1140,8 +1168,8 @@ class MessageHandler:
 
             if action == "set_owner_name":
                 owner_name = route["owner_name"]
-                self.store.owner["display_name"] = owner_name
-                self.store._save()
+                store.owner["display_name"] = owner_name
+                store._save()
                 return f"知道啦！以后叫你{owner_name}~ \u2764\ufe0f"
 
         # AI 兜底（带对话记忆）
@@ -1154,6 +1182,7 @@ class MessageHandler:
                 first_day = min(stats["active_dates"])
                 from datetime import datetime as _dt
                 days_together = (_dt.strptime(today_str(), "%Y-%m-%d") - _dt.strptime(first_day, "%Y-%m-%d")).days + 1
+            species_id = store.get_species_id() if hasattr(store, 'get_species_id') else "penguin"
             pet_context = {
                 "name": name, "hunger": pet.get("hunger", 50),
                 "cleanliness": pet.get("cleanliness", 50), "mood": pet.get("mood", 50),
@@ -1162,18 +1191,16 @@ class MessageHandler:
                 "is_exploring": pet.get("is_exploring", False),
                 "explore_location": pet.get("explore_location"),
                 "days_together": days_together,
-                "owner_name": self.store.owner.get("display_name", ""),
+                "owner_name": store.owner.get("display_name", ""),
             }
-            result = parse_message(text, pet_context, history=self.store.chat_history)
+            result = parse_message(text, pet_context, history=store.chat_history, species_id=species_id)
             if result and result.get("reply"):
                 reply_text = result["reply"]
-                # AI 闲聊不发图片，只有明确操作才发
-                # 记录对话历史
-                self.store.chat_history.append({"role": "user", "content": text})
-                self.store.chat_history.append({"role": "assistant", "content": reply_text})
-                if len(self.store.chat_history) > 40:
-                    self.store.chat_history = self.store.chat_history[-40:]
-                self.store._save()
+                store.chat_history.append({"role": "user", "content": text})
+                store.chat_history.append({"role": "assistant", "content": reply_text})
+                if len(store.chat_history) > 40:
+                    store.chat_history = store.chat_history[-40:]
+                store._save()
                 return reply_text
         except Exception as e:
             print(f"  AI 调用失败: {e}")
@@ -1272,10 +1299,6 @@ if __name__ == "__main__":
     print(f"改名: {r}")
     assert "不支持" in _text(r)
     assert store.pet["name"] == "小雪"  # 名字不变
-
-    # 单主人
-    r = handler.handle_message("u2", "看看")
-    assert "主人" in _text(r)
 
     # decay_all tick 机制
     store.pet["hunger"] = 80

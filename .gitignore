@@ -11,3 +11,5 @@ test_*.gif
 pet/pet_data_backup_*.json
 pet/data/
 docs/
+pet/data/
+pet/pet_data.json.migrated

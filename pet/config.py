@@ -108,5 +108,6 @@ CHITCHAT_SCHEDULE = {
 CHITCHAT_COOLDOWN_MIN = 60  # 用户互动后的冷却期（分钟）
 
 # === 文件路径 ===
-PET_DATA_FILE = str(BASE_DIR / "pet_data.json")
+DATA_DIR = BASE_DIR / "data"
+# PET_DATA_FILE = str(BASE_DIR / "pet_data.json")  # V1 遗留，已迁移到 data/{user_id}/pet.json
 ILINK_STATE_FILE = str(BASE_DIR / "ilink_state.json")
