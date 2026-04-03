@@ -64,6 +64,15 @@ def create_scheduler(registry, send_fn, send_image_fn=None):
         id='weekly_report_job',
         misfire_grace_time=600,
     )
+    scheduler.add_job(
+        _daily_personality_job,
+        'cron',
+        hour=0, minute=5,
+        args=[registry, send_fn],
+        id='daily_personality',
+        timezone=TIMEZONE,
+        misfire_grace_time=600,
+    )
     return scheduler
 
 
@@ -138,6 +147,13 @@ def _tick_for_user(store, send_fn, send_image_fn):
             send_fn(user_id, f"{name}已经饿得不行了... (；´Д`)\n再不喂我就要饿晕啦！")
 
     print(f"  ⏰ [{store.user_id[:15]}] 衰减: " + ", ".join(f"{s}:{o}->{n}" for s, (o, n) in results.items()))
+
+    # === 性格区间跨越通知 ===
+    notifications = store.pet.pop("_pending_notifications", [])
+    for msg in notifications:
+        send_fn(user_id, msg)
+    if notifications:
+        store._save()
 
 
 def _auto_explore_job(registry, send_fn, send_image_fn):
@@ -493,3 +509,56 @@ def _generate_chitchat(name, pet, slot_key, species_id="penguin"):
 
     templates = _CHITCHAT_FALLBACK.get(slot_key, ["{name}看着你~ (・ω・)"])
     return random.choice(templates).format(name=name)
+
+
+def _daily_personality_job(registry, send_fn):
+    """每日 0:05 执行：性格 offset 回归 baseline，重置日用量，亲密度忽视惩罚。"""
+    for store in registry.all_active_stores():
+        try:
+            with store._lock:
+                if store.pet is None or "trait_offsets" not in store.pet:
+                    continue
+
+                from personality import daily_decay_toward_baseline, compute_displayed_traits, update_intimacy, detect_band_crossings, get_crossing_message
+                from species import get_species
+
+                # 重置每日偏移用量
+                store.pet["trait_daily_used"] = {k: 0.0 for k in store.pet.get("trait_offsets", {})}
+                store.pet["intimacy_daily_gained"] = 0.0
+
+                # Offset 回归 baseline
+                offsets = store.pet.get("trait_offsets", {})
+                new_offsets = daily_decay_toward_baseline(offsets)
+                store.pet["trait_offsets"] = new_offsets
+
+                # 重算展示值
+                spec = get_species(store.get_species_id())
+                if spec:
+                    old_traits = dict(store.pet.get("traits", {}))
+                    store.pet["traits"] = compute_displayed_traits(spec["baseline_traits"], new_offsets)
+
+                    # 检测区间跨越 → 存入待发送通知
+                    crossings = detect_band_crossings(old_traits, store.pet["traits"])
+                    if crossings:
+                        store.pet.setdefault("_pending_notifications", [])
+                        for key, (old_band, new_band) in crossings.items():
+                            msg = get_crossing_message(key, old_band, new_band, store.get_pet_name())
+                            if msg:
+                                store.pet["_pending_notifications"].append(msg)
+
+                # 亲密度忽视惩罚
+                last_at = store.pet.get("last_interaction_at")
+                if last_at:
+                    from datetime import datetime
+                    try:
+                        last_time = datetime.fromisoformat(last_at)
+                        hours = (now() - last_time).total_seconds() / 3600
+                        intimacy = store.pet.get("intimacy", 0.3)
+                        new_int, _ = update_intimacy(intimacy, 0.0, interaction=False, hours_since_last=hours)
+                        store.pet["intimacy"] = new_int
+                    except (ValueError, TypeError):
+                        pass
+
+                store._save()
+        except Exception as e:
+            print(f"[scheduler] personality decay error for {store.user_id}: {e}")
