@@ -89,6 +89,40 @@ def _build_system_prompt(pet_context, species_id="penguin"):
     else:
         nickname_rule = "你叫对方「主人」"
 
+    # 性格信息（Phase 2）
+    traits = pet_context.get("traits", {})
+    intimacy = pet_context.get("intimacy", 0.3)
+
+    trait_desc_parts = []
+    if traits:
+        from personality import get_trait_band, TRAIT_KEYS
+        trait_label_cn = {
+            "extrovert": ("外向", "内向"),
+            "brave": ("勇敢", "谨慎"),
+            "greedy": ("嘴馋", "克制"),
+            "curious": ("好奇", "安定"),
+            "blunt": ("直球", "委婉"),
+        }
+        for key in TRAIT_KEYS:
+            val = traits.get(key, 0.5)
+            band = get_trait_band(val)
+            high_label, low_label = trait_label_cn.get(key, (key, key))
+            if band == "high":
+                trait_desc_parts.append(f"非常{high_label}")
+            elif band == "low":
+                trait_desc_parts.append(f"比较{low_label}")
+
+    trait_line = f"- 性格特点：{', '.join(trait_desc_parts)}" if trait_desc_parts else ""
+
+    if intimacy >= 0.8:
+        intimacy_line = "- 你和主人非常亲密，会撒娇、会吃醋、偶尔偷偷说'喜欢你'"
+    elif intimacy >= 0.5:
+        intimacy_line = "- 你和主人关系不错，会主动贴贴，偶尔撒娇"
+    elif intimacy >= 0.3:
+        intimacy_line = "- 你和主人还在熟悉中，有点害羞但很期待"
+    else:
+        intimacy_line = "- 你和主人还不太熟，比较拘谨，但会努力表现自己"
+
     return f"""你是一只叫「{name}」的{species_name}宠物（Lv.{level}）。
 说话风格：{personality_hint}
 {nickname_rule}
@@ -102,10 +136,12 @@ def _build_system_prompt(pet_context, species_id="penguin"):
 - 综合感受：{mood_desc}
 - 时间：{time_ctx}
 {f"- 🗺️ 探险中：{explore_desc}" if explore_desc else ""}
+{trait_line}
+{intimacy_line}
 
 规则：
 1. 用1-2句话回应，保持简短
-2. 说话风格符合你的品种个性，偶尔用颜文字
+2. 说话风格符合你的品种个性和性格特点，偶尔用颜文字
 3. 保持{species_name}角色不要破
 4. 如果主人提到吃的/食物，表现出很馋的样子
 5. 如果生病了，表现出虚弱的样子

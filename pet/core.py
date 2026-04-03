@@ -1342,6 +1342,8 @@ class MessageHandler:
                 "explore_location": pet.get("explore_location"),
                 "days_together": days_together,
                 "owner_name": store.owner.get("display_name", ""),
+                "traits": pet.get("traits", {}),
+                "intimacy": pet.get("intimacy", 0.3),
             }
             result = parse_message(text, pet_context, history=store.chat_history, species_id=species_id)
             if result and result.get("reply"):
