@@ -944,6 +944,32 @@ def _rule_route(text):
     return None
 
 
+# ============================================================
+# 性格标签（Phase 2）
+# ============================================================
+TRAIT_LABELS = {
+    "extrovert": {"high": "活泼", "mid": "", "low": "安静"},
+    "brave": {"high": "勇敢", "mid": "", "low": "谨慎"},
+    "greedy": {"high": "嘴馋", "mid": "", "low": "克制"},
+    "curious": {"high": "好奇", "mid": "", "low": "安逸"},
+    "blunt": {"high": "直球", "mid": "", "low": "委婉"},
+}
+
+
+def _trait_tags(traits):
+    """从性格值生成最显著的标签（最多 3 个）。"""
+    from personality import get_trait_band
+    tags = []
+    for key, value in traits.items():
+        band = get_trait_band(value)
+        label = TRAIT_LABELS.get(key, {}).get(band, "")
+        if label:
+            tags.append(label)
+    if not tags:
+        tags = ["中庸"]
+    return "·".join(tags[:3])
+
+
 class MessageHandler:
     def __init__(self, registry=None, store=None):
         # V2: 优先使用 registry（多用户），兼容 V1 store（本地测试）
@@ -965,8 +991,11 @@ class MessageHandler:
         # 重启恢复：检测未完成的孵蛋/起名流程
         if user_id not in self._user_state and store.pet is not None:
             if store.pet.get("stage") == "egg" and not store.pet.get("name"):
-                self._user_state[user_id] = "ask_name"
-                return ("\U0001f95a 上次还没给宠物起名字呢~ 给它取个名字吧！", "hatching")
+                self._user_state[user_id] = "ask_name_v2"
+                return (
+                    "🥚 上次还没给宠物起名字呢~ 给它取个名字吧！",
+                    "hatching"
+                )
             elif not store.owner.get("display_name"):
                 self._user_state[user_id] = "ask_owner_name"
                 pet_name = store.get_pet_name() if hasattr(store, 'get_pet_name') else store.pet.get("name", "宠物")
@@ -1007,6 +1036,13 @@ class MessageHandler:
             return self._start_hatch(user_id)
         return "还没有宠物呢~ 发送「孵蛋」领养一只吧！"
 
+    # 孵化塑形选项
+    HATCHING_OPTIONS = {
+        "1": {"label": "轻轻跟它说话", "offsets": {"extrovert": 0.03, "blunt": 0.02}},
+        "2": {"label": "安抚它，给它温暖", "offsets": {"brave": -0.02, "curious": -0.01}},
+        "3": {"label": "鼓励它去看看外面的世界", "offsets": {"brave": 0.03, "curious": 0.03}},
+    }
+
     def _start_hatch(self, user_id):
         store = self._get_store(user_id)
         from species import random_species, get_species
@@ -1014,17 +1050,30 @@ class MessageHandler:
         try:
             store.create_egg(user_id, "", species_id)
         except TypeError:
-            # V1 PetStore.create_egg 只接受 2 个参数
             store.create_egg(user_id, "")
-        spec = get_species(species_id)
-        species_name = spec["name"] if spec else "小宠物"
-        species_emoji = spec["emoji"] if spec else "🐾"
-        self._user_state[user_id] = "ask_name"
-        return (f"\U0001f95a 蛋裂开了！一只{species_name}探出了头~ {species_emoji}\n\n给它起个名字吧！", "hatching")
+        self._user_state[user_id] = "hatching_1"
+        return (
+            "🥚 你获得了一颗神秘的蛋！\n\n"
+            "蛋壳上隐约有花纹在闪烁... 你想对它做什么？\n\n"
+            "1️⃣ 轻轻跟它说话\n"
+            "2️⃣ 安抚它，给它温暖\n"
+            "3️⃣ 鼓励它去看看外面的世界",
+            "hatching"
+        )
 
     def _handle_state(self, user_id, text):
         store = self._get_store(user_id)
         state = self._user_state.get(user_id)
+
+        # 孵化塑形流程（3 步互动）
+        if state and state.startswith("hatching_"):
+            return self._handle_hatching_step(user_id, text, store)
+
+        # 揭示品种后等待命名
+        if state == "ask_name_v2":
+            return self._handle_naming(user_id, text, store)
+
+        # V1 遗留：直接起名
         if state == "ask_name":
             name = text.strip()
             if len(name) > 10:
@@ -1034,7 +1083,6 @@ class MessageHandler:
             store.hatch(name)
             store.owner["name"] = name
             self._user_state[user_id] = "ask_owner_name"
-            # 获取品种 emoji
             species_emoji = "🐧"
             if hasattr(store, 'get_species_id'):
                 from species import get_species
@@ -1042,6 +1090,7 @@ class MessageHandler:
                 if spec:
                     species_emoji = spec["emoji"]
             return f"{species_emoji} {name} 诞生了！\n\n{name}歪着头看着你：你希望我叫你什么呀？"
+
         if state == "ask_owner_name":
             owner_name = text.strip()
             if len(owner_name) > 10:
@@ -1052,9 +1101,110 @@ class MessageHandler:
             store.owner["display_name"] = owner_name
             store._save()
             del self._user_state[user_id]
-            return f"好的{owner_name}！以后就这么叫你啦~ \u2764\ufe0f\n\n{pet_name}肚子咕咕叫~ 发送「喂食」来喂它，发送「看看」查看状态！"
+            return f"好的{owner_name}！以后就这么叫你啦~ ❤️\n\n{pet_name}肚子咕咕叫~ 发送「喂食」来喂它，发送「看看」查看状态！"
+
         del self._user_state[user_id]
         return None
+
+    def _handle_hatching_step(self, user_id, text, store):
+        """处理孵化塑形的 3 步互动。"""
+        state = self._user_state[user_id]
+        step = int(state.split("_")[1])
+
+        choice = text.strip()
+        if choice not in ("1", "2", "3"):
+            return (
+                "请输入 1、2 或 3 来选择哦~\n\n"
+                "1️⃣ 轻轻跟它说话\n"
+                "2️⃣ 安抚它，给它温暖\n"
+                "3️⃣ 鼓励它去看看外面的世界"
+            )
+
+        # 累积孵化偏移
+        offsets = self.HATCHING_OPTIONS[choice]["offsets"]
+        accumulated = self._user_state.get(f"{user_id}_hatching", {})
+        for k, v in offsets.items():
+            accumulated[k] = accumulated.get(k, 0) + v
+        self._user_state[f"{user_id}_hatching"] = accumulated
+
+        action_label = self.HATCHING_OPTIONS[choice]["label"]
+
+        if step < 3:
+            self._user_state[user_id] = f"hatching_{step + 1}"
+            egg_responses = [
+                (
+                    f"你选择了「{action_label}」\n\n"
+                    "蛋轻轻晃动了一下... 好像有反应呢！✨\n\n"
+                    "要继续吗？\n"
+                    "1️⃣ 轻轻跟它说话\n"
+                    "2️⃣ 安抚它，给它温暖\n"
+                    "3️⃣ 鼓励它去看看外面的世界"
+                ),
+                (
+                    f"你选择了「{action_label}」\n\n"
+                    "蛋裂开了一条小缝！能隐约看到里面在动！🥚💫\n\n"
+                    "最后一次，你想对它...\n"
+                    "1️⃣ 轻轻跟它说话\n"
+                    "2️⃣ 安抚它，给它温暖\n"
+                    "3️⃣ 鼓励它去看看外面的世界"
+                ),
+            ]
+            return egg_responses[step - 1]
+        else:
+            # 第 3 次互动完成，揭示品种
+            from species import get_species
+            species_id = store.get_species_id()
+            spec = get_species(species_id)
+            species_name = spec["name"]
+            species_emoji = spec["emoji"]
+
+            self._user_state[user_id] = "ask_name_v2"
+            return (
+                f"你选择了「{action_label}」\n\n"
+                f"蛋壳碎了！✨🎉\n\n"
+                f"一只{species_emoji} **{species_name}** 从蛋里探出了头！\n"
+                f"它好奇地看着你，眨了眨眼睛~\n\n"
+                f"给它起个名字吧！"
+            )
+
+    def _handle_naming(self, user_id, text, store):
+        """揭示品种后的命名流程。"""
+        name = text.strip()
+        if len(name) > 10:
+            return "名字太长啦，10 个字以内吧~"
+        if not name:
+            return "名字不能为空哦，再想一个吧~"
+
+        from species import get_species
+        from personality import compute_initial_traits
+
+        species_id = store.get_species_id()
+        spec = get_species(species_id)
+        baselines = spec["baseline_traits"]
+        hatching_offsets = self._user_state.pop(f"{user_id}_hatching", {})
+
+        initial_traits = compute_initial_traits(baselines, hatching_offsets=hatching_offsets)
+
+        store.hatch(name)
+
+        # 写入性格
+        store.pet["traits"] = initial_traits
+        store.pet["trait_offsets"] = {k: 0.0 for k in initial_traits}
+        store.pet["trait_daily_used"] = {k: 0.0 for k in initial_traits}
+        store._save()
+
+        self._user_state[user_id] = "ask_owner_name"
+
+        species_name = spec["name"]
+        species_emoji = spec["emoji"]
+        trait_tags = _trait_tags(initial_traits)
+
+        return (
+            f"{species_emoji} **{name}** 开心地叫了一声！\n\n"
+            f"品种：{species_name}\n"
+            f"性格：{trait_tags}\n\n"
+            f"{name}歪着头看着你：你希望我叫你什么呀？"
+        )
 
     def _with_achievements(self, store, reply, action):
         """在回复后附加成就通知"""
