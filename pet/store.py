@@ -15,7 +15,7 @@ import os
 import threading
 from pathlib import Path
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 def _default_pet(species):
@@ -61,6 +61,13 @@ def _default_pet(species):
             "daily_messages_date": None,
             "active_dates": [],
         },
+        # 性格系统（Phase 2）
+        "traits": {},
+        "trait_offsets": {},
+        "trait_daily_used": {},
+        "intimacy": 0.3,
+        "intimacy_daily_gained": 0.0,
+        "last_interaction_at": None,
     }
 
 
@@ -118,13 +125,29 @@ class UserPetStore:
         self._migrate(data.get("schema_version", 1))
 
     def _migrate(self, from_version):
-        """数据迁移。V3 → V4: 添加 species 字段。"""
+        """数据迁移。"""
         if self.pet is None:
             return
         # v3 → v4: 添加 species（旧数据默认 penguin）
         if from_version < 4:
             if "species" not in self.pet:
                 self.pet["species"] = "penguin"
+            self._save()
+        # v4 → v5: 添加性格系统字段
+        if from_version < 5:
+            if "traits" not in self.pet:
+                from species import get_species
+                from personality import compute_initial_traits
+                spec = get_species(self.pet.get("species", "penguin"))
+                baselines = spec["baseline_traits"] if spec else {k: 0.5 for k in ["extrovert", "brave", "greedy", "curious", "blunt"]}
+                self.pet["traits"] = compute_initial_traits(baselines)
+            if "trait_offsets" not in self.pet:
+                self.pet["trait_offsets"] = {k: 0.0 for k in ["extrovert", "brave", "greedy", "curious", "blunt"]}
+            if "trait_daily_used" not in self.pet:
+                self.pet["trait_daily_used"] = {k: 0.0 for k in ["extrovert", "brave", "greedy", "curious", "blunt"]}
+            self.pet.setdefault("intimacy", 0.3)
+            self.pet.setdefault("intimacy_daily_gained", 0.0)
+            self.pet.setdefault("last_interaction_at", None)
             self._save()
 
     def _save(self):

@@ -34,7 +34,7 @@ class TestUserPetStore:
         assert os.path.exists(data_file)
         with open(data_file, "r", encoding="utf-8") as f:
             data = json.load(f)
-        assert data["schema_version"] == 4
+        assert data["schema_version"] == 5
         assert data["pet"]["species"] == "penguin"
 
     def test_hatch_sets_name(self):
