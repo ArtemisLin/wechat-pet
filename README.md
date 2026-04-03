@@ -16,6 +16,12 @@ A virtual pet agent running on WeChat via the official iLink (ClawBot) Bot API. 
 
 ## Screenshots
 
+<p align="center">
+  <img src="assets/penguin/idle.png" width="200" alt="Idle">
+  <img src="assets/penguin/happy.png" width="200" alt="Happy">
+  <img src="assets/penguin/eating.png" width="200" alt="Eating">
+</p>
+
 ```
 🐧 小阿乌  Lv.1 宝宝
 🍖 饱腹：😆 ████████░░ 80%
