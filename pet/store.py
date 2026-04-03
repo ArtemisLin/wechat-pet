@@ -202,6 +202,36 @@ class UserPetStore:
             self._save()
             return True
 
+    def _apply_personality_offset(self, action):
+        """应用一次互动的性格偏移 + 亲密度更新。"""
+        if self.pet is None or "trait_offsets" not in self.pet:
+            return
+        from personality import apply_interaction_offset, compute_displayed_traits, update_intimacy
+        from species import get_species
+        from config import now_str
+
+        spec = get_species(self.get_species_id())
+        if not spec:
+            return
+
+        baselines = spec["baseline_traits"]
+        offsets = self.pet.get("trait_offsets", {})
+        daily = self.pet.get("trait_daily_used", {})
+
+        new_offsets, new_daily = apply_interaction_offset(offsets, daily, baselines, action)
+
+        self.pet["trait_offsets"] = new_offsets
+        self.pet["trait_daily_used"] = new_daily
+        self.pet["traits"] = compute_displayed_traits(baselines, new_offsets)
+
+        # 更新亲密度
+        intimacy = self.pet.get("intimacy", 0.3)
+        daily_gained = self.pet.get("intimacy_daily_gained", 0.0)
+        new_intimacy, new_daily_gained = update_intimacy(intimacy, daily_gained, interaction=True)
+        self.pet["intimacy"] = new_intimacy
+        self.pet["intimacy_daily_gained"] = new_daily_gained
+        self.pet["last_interaction_at"] = now_str()
+
     def feed(self):
         """喂食。返回 (old, new) 或 None。"""
         import random
@@ -215,6 +245,7 @@ class UserPetStore:
             amt = random.randint(lo, hi)
             self.pet["hunger"] = min(100, old + amt)
             self.pet["last_fed_at"] = now_str()
+            self._apply_personality_offset("feed")
             self._save()
             return (old, self.pet["hunger"])
 
@@ -231,6 +262,7 @@ class UserPetStore:
             amt = random.randint(lo, hi)
             self.pet["cleanliness"] = min(100, old + amt)
             self.pet["last_bathed_at"] = now_str()
+            self._apply_personality_offset("bathe")
             self._save()
             return (old, self.pet["cleanliness"])
 
@@ -250,6 +282,7 @@ class UserPetStore:
             self.pet["mood"] = min(100, old + amt)
             self.pet["stamina"] = max(0, self.pet["stamina"] - PLAY_STAMINA_COST)
             self.pet["last_played_at"] = now_str()
+            self._apply_personality_offset("play")
             self._save()
             return (old, self.pet["mood"])
 
@@ -265,6 +298,7 @@ class UserPetStore:
             amt = random.randint(lo, hi)
             self.pet["health"] = min(100, old + amt)
             self.pet["last_healed_at"] = now_str()
+            self._apply_personality_offset("heal")
             self._save()
             return (old, self.pet["health"])
 
@@ -334,6 +368,7 @@ class UserPetStore:
             self.pet["is_exploring"] = True
             self.pet["explore_until"] = until.isoformat()
             self.pet["explore_location"] = loc
+            self._apply_personality_offset("explore")
             self._save()
             return (loc, until.isoformat(), dur)
 
