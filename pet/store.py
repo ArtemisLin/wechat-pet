@@ -471,9 +471,43 @@ class UserPetStore:
                         self.pet["level"] = new_level
                         self.pet["stage"] = stage_id
                         self._save()
+                        # 触发成长解锁图生成
+                        self._async_gen_stage_images(stage_id)
                         return stage_id
             self._save()
             return None
+
+    def _async_gen_stage_images(self, new_stage):
+        """升级时异步生成新阶段解锁的图片。"""
+        import threading
+
+        def _gen():
+            try:
+                from assets_manager import STAGE_UNLOCKS
+                from image_gen import build_prompt, generate_image, save_cached_image, save_gen_metadata
+                from config import now_str
+                keys = STAGE_UNLOCKS.get(new_stage, [])
+                species_id = self.get_species_id() or "penguin"
+                traits = self.pet.get("traits", {})
+                for key in keys:
+                    prompt = build_prompt(species_id, key, traits=traits)
+                    result = generate_image(prompt)
+                    if result.success and result.image_bytes:
+                        save_cached_image(self.user_dir, key, result.image_bytes)
+                        save_gen_metadata(self.user_dir, key, {
+                            "prompt": prompt,
+                            "model": result.model,
+                            "species": species_id,
+                            "action": key,
+                            "generated_at": now_str(),
+                        })
+                        print(f"[image_gen] Stage {new_stage}: generated {key}")
+                    else:
+                        print(f"[image_gen] Stage {new_stage}: failed {key}: {result.error}")
+            except Exception as e:
+                print(f"[image_gen] Stage gen error: {e}")
+
+        threading.Thread(target=_gen, daemon=True).start()
 
     def get_species_id(self):
         """返回当前宠物的品种 ID，无宠物返回 None。"""

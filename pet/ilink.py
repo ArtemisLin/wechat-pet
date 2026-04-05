@@ -210,9 +210,17 @@ def _resolve_image_path(image_key, species_id="penguin"):
     return None
 
 
-def _send_image_by_key(state, user_id, context_token, image_key, species_id="penguin"):
-    """根据 image_key 发送对应的素材图片（支持变体随机）"""
-    img_path = _resolve_image_path(image_key, species_id)
+def _send_image_by_key(state, user_id, context_token, image_key, species_id="penguin", user_dir=None):
+    """根据 image_key 发送对应的素材图片。
+
+    优先使用 AI 生成的缓存图（通过 assets_manager），fallback 到预制素材。
+    """
+    img_path = None
+    if user_dir:
+        from assets_manager import resolve_image
+        img_path = resolve_image(user_dir, species_id, image_key)
+    if not img_path:
+        img_path = _resolve_image_path(image_key, species_id)
     if not img_path:
         print(f"  素材不存在: {image_key}")
         return False
@@ -222,6 +230,61 @@ def _send_image_by_key(state, user_id, context_token, image_key, species_id="pen
     except Exception as e:
         print(f"  发送图片失败: {e}")
         return False
+
+
+# ============================================================
+# Typing 状态 + 节奏发送
+# ============================================================
+_typing_ticket_cache = {"ticket": None, "expires": 0}
+
+
+def _get_typing_ticket(state):
+    """获取 typing_ticket（带缓存）。"""
+    if _typing_ticket_cache["ticket"] and time.time() < _typing_ticket_cache["expires"]:
+        return _typing_ticket_cache["ticket"]
+    resp = _api_request("POST", "/ilink/bot/getconfig", body={},
+                        headers=_make_headers(state.get("bot_token")))
+    if resp and "error" not in resp:
+        ticket = resp.get("typing_ticket", "")
+        if ticket:
+            _typing_ticket_cache["ticket"] = ticket
+            _typing_ticket_cache["expires"] = time.time() + 3600
+            return ticket
+    return None
+
+
+def _send_typing(state, user_id, status=1):
+    """发送 typing 状态。status=1 开始，status=2 取消。"""
+    ticket = _get_typing_ticket(state)
+    if not ticket:
+        return
+    body = {
+        "to_user_id": user_id,
+        "typing_ticket": ticket,
+        "status": status,
+    }
+    _api_request("POST", "/ilink/bot/sendtyping", body=body,
+                 headers=_make_headers(state.get("bot_token")))
+
+
+def _send_with_rhythm(state, user_id, context_token, text, image_key=None,
+                      species_id="penguin", user_dir=None, is_ritual=False):
+    """带节奏的消息发送。
+
+    普通消息：直接发
+    仪式节点（is_ritual=True）：typing → 文字 → 短暂停 → 图片
+    """
+    if is_ritual and image_key:
+        _send_typing(state, user_id, status=1)
+        time.sleep(1.5)
+        send_message(state, user_id, context_token, text)
+        time.sleep(1.0)
+        _send_image_by_key(state, user_id, context_token, image_key, species_id, user_dir)
+        _send_typing(state, user_id, status=2)
+    else:
+        send_message(state, user_id, context_token, text)
+        if image_key:
+            _send_image_by_key(state, user_id, context_token, image_key, species_id, user_dir)
 
 
 # ============================================================
@@ -304,19 +367,23 @@ def run_loop(state, on_message=None):
                     if on_message:
                         reply = on_message(user_id, text, is_voice)
                         if reply:
-                            # 支持 (text, image_key, species_id) / (text, image_key) / str
+                            # 支持 (text, image_key, species_id, user_dir) / (text, image_key, species_id) / (text, image_key) / str
                             if isinstance(reply, str):
-                                reply_text, image_key, species_id = reply, None, "penguin"
+                                reply_text, image_key, species_id, user_dir = reply, None, "penguin", None
+                            elif len(reply) == 4:
+                                reply_text, image_key, species_id, user_dir = reply
                             elif len(reply) == 3:
                                 reply_text, image_key, species_id = reply
+                                user_dir = None
                             else:
                                 reply_text, image_key = reply
                                 species_id = "penguin"
+                                user_dir = None
                             ok = send_message(state, user_id, context_token, reply_text)
                             print(f"  回复: {reply_text[:60]}{'...' if len(reply_text)>60 else ''}")
                             print(f"  {'✓' if ok else '✗'}")
                             if image_key:
-                                _send_image_by_key(state, user_id, context_token, image_key, species_id)
+                                _send_image_by_key(state, user_id, context_token, image_key, species_id, user_dir)
 
     except KeyboardInterrupt:
         print("\n\n  宠物已休息 👋")
@@ -376,13 +443,14 @@ def start():
             from scheduler import mark_user_interaction
             mark_user_interaction(user_id)
             reply = handler.handle_message(user_id, text, is_voice)
-            # 如果回复包含图片 key，获取用户品种用于素材路径
+            # 如果回复包含图片 key，获取用户品种和数据目录用于素材路径
             if isinstance(reply, tuple) and len(reply) == 2:
                 text_reply, image_key = reply
                 user_store = registry.get_or_create(user_id)
                 species_id = user_store.get_species_id() or "penguin"
-                # 返回 3 元组让 run_loop 里的发送逻辑知道品种
-                return (text_reply, image_key, species_id)
+                user_dir = user_store.user_dir
+                # 返回 4 元组让 run_loop 里的发送逻辑知道品种和用户目录
+                return (text_reply, image_key, species_id, user_dir)
             return reply
         except Exception as e:
             print(f"  处理异常: {e}")

@@ -107,6 +107,10 @@ CHITCHAT_SCHEDULE = {
 }
 CHITCHAT_COOLDOWN_MIN = 60  # 用户互动后的冷却期（分钟）
 
+# === 即梦 AI 生图（Phase 3）===
+IMAGE_GEN_AK = os.environ.get("IMAGE_GEN_AK", "")
+IMAGE_GEN_SK = os.environ.get("IMAGE_GEN_SK", "")
+
 # === 文件路径 ===
 DATA_DIR = BASE_DIR / "data"
 # PET_DATA_FILE = str(BASE_DIR / "pet_data.json")  # V1 遗留，已迁移到 data/{user_id}/pet.json

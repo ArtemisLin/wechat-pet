@@ -1205,6 +1205,9 @@ class MessageHandler:
         store.pet["trait_daily_used"] = {k: 0.0 for k in initial_traits}
         store._save()
 
+        # 触发异步生图（不阻塞用户）
+        self._async_gen_hatch_images(store.user_dir, species_id, initial_traits, user_id)
+
         self._user_state[user_id] = "ask_owner_name"
 
         species_name = spec["name"]
@@ -1217,6 +1220,35 @@ class MessageHandler:
             f"性格：{trait_tags}\n\n"
             f"{name}歪着头看着你：你希望我叫你什么呀？"
         )
+
+    def _async_gen_hatch_images(self, user_dir, species_id, traits, user_id):
+        """孵化完成后异步生成初始图片（base/idle/happy/sleeping）。"""
+        import threading
+
+        def _gen():
+            try:
+                from image_gen import build_prompt, generate_image, save_cached_image, save_gen_metadata
+                from config import now_str
+                for key in ["base", "idle", "happy", "sleeping"]:
+                    prompt = build_prompt(species_id, key, traits=traits)
+                    result = generate_image(prompt)
+                    if result.success and result.image_bytes:
+                        save_cached_image(user_dir, key, result.image_bytes)
+                        save_gen_metadata(user_dir, key, {
+                            "prompt": prompt,
+                            "model": result.model,
+                            "seed": result.seed,
+                            "species": species_id,
+                            "action": key,
+                            "generated_at": now_str(),
+                        })
+                        print(f"[image_gen] Generated {key} for {user_id[:15]}")
+                    else:
+                        print(f"[image_gen] Failed {key}: {result.error}")
+            except Exception as e:
+                print(f"[image_gen] Error: {e}")
+
+        threading.Thread(target=_gen, daemon=True).start()
 
     def _with_achievements(self, store, reply, action):
         """在回复后附加成就通知"""
