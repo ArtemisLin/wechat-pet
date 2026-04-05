@@ -151,7 +151,7 @@ def _build_system_prompt(pet_context, species_id="penguin"):
 9. 不要返回markdown，只返回纯JSON"""
 
 
-def parse_message(text, pet_context, history=None, species_id="penguin"):
+def parse_message(text, pet_context, history=None, species_id="penguin", degradation="normal"):
     """
     调用 AI 生成宠物回复。
     history: [{"role":"user","content":"..."}, {"role":"assistant","content":"..."}]
@@ -164,8 +164,13 @@ def parse_message(text, pet_context, history=None, species_id="penguin"):
     messages = [{"role": "system", "content": system_prompt}]
 
     # 加入对话历史
+    max_tokens = 200
+    if degradation == "light":
+        max_tokens = 100
+        if history:
+            history = history[-20:]  # 缩短历史
     if history:
-        messages.extend(history[-40:])  # 最近 20 轮
+        messages.extend(history[-40:])
 
     messages.append({"role": "user", "content": text})
 
@@ -173,7 +178,7 @@ def parse_message(text, pet_context, history=None, species_id="penguin"):
         "model": AI_MODEL,
         "messages": messages,
         "temperature": 0.8,
-        "max_tokens": 200,
+        "max_tokens": max_tokens,
     }
 
     req = Request(AI_BASE_URL, data=json.dumps(body).encode("utf-8"), method="POST")

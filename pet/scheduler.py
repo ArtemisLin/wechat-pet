@@ -215,7 +215,19 @@ def _diary_for_user(store, send_fn):
         return
 
     events = store.get_today_events()
-    diary_content = _generate_diary(name, events, species_id)
+
+    # 额度检查：星星足够用 AI 生成，否则用模板
+    from quota import QuotaManager, COST_DIARY
+    qm = QuotaManager.from_dict(store.pet.get("quota", {}))
+    if qm.can_spend_stars(COST_DIARY):
+        qm.spend_stars(COST_DIARY)
+        store.pet["quota"] = qm.to_dict()
+        store._save()
+        diary_content = _generate_diary(name, events, species_id)
+    else:
+        # 简单模板日记
+        diary_content = f"今天{name}和主人在一起，过得很开心~ 明天也要一起玩哦！"
+
     store.add_diary_entry(today, diary_content)
 
     send_fn(user_id, f"📖 {name}写了今天的日记~\n\n{diary_content}\n\n(发送「日记」可以翻看哦)")
@@ -269,7 +281,18 @@ def _weekly_report_for_user(store, send_fn):
         lines.append(f"🔥 连续活跃：{consecutive}天！")
 
     lines.append("")
-    summary = _generate_weekly_summary(name, feeds, plays, explores, species_id)
+
+    # 额度检查：星星足够用 AI 生成总结，否则用模板
+    from quota import QuotaManager, COST_WEEKLY_REPORT
+    qm = QuotaManager.from_dict(store.pet.get("quota", {}))
+    if qm.can_spend_stars(COST_WEEKLY_REPORT):
+        qm.spend_stars(COST_WEEKLY_REPORT)
+        store.pet["quota"] = qm.to_dict()
+        store._save()
+        summary = _generate_weekly_summary(name, feeds, plays, explores, species_id)
+    else:
+        summary = f"这周和主人在一起好开心！下周也要一起玩哦~ ❤️"
+
     lines.append(summary)
 
     send_fn(user_id, "\n".join(lines))
@@ -463,10 +486,34 @@ def _chitchat_for_user(store, send_fn, send_image_fn):
         if not eligible_slot:
             return
 
+        # 额度检查
+        from quota import QuotaManager, DegradationLevel
+        qm = QuotaManager.from_dict(store.pet.get("quota", {}))
+        deg = qm.degradation_level()
+
+        if deg == DegradationLevel.DEEP:
+            return  # 犯困模式不主动闲聊
+
+        if deg == DegradationLevel.LIGHT:
+            if random.random() > 0.3:  # 轻度降级：降低闲聊概率
+                return
+
         if random.random() < 0.5:
             return
 
-    msg = _generate_chitchat(name, store.pet, eligible_slot, species_id)
+    # 50% 用预制模板（不消耗），50% 用 AI（消耗陪伴能量）
+    from quota import QuotaManager
+    qm = QuotaManager.from_dict(store.pet.get("quota", {}))
+    use_ai = random.random() < 0.5 and qm.can_spend_companion(1)
+    if use_ai:
+        qm.spend_companion(1)
+        store.pet["quota"] = qm.to_dict()
+        store._save()
+        msg = _generate_chitchat(name, store.pet, eligible_slot, species_id)
+    else:
+        templates = _CHITCHAT_FALLBACK.get(eligible_slot, ["{name}看着你~ (・ω・)"])
+        msg = random.choice(templates).format(name=name)
+
     if msg:
         send_fn(user_id, msg)
         if send_image_fn:
@@ -525,6 +572,12 @@ def _daily_personality_job(registry, send_fn):
                 # 重置每日偏移用量
                 store.pet["trait_daily_used"] = {k: 0.0 for k in store.pet.get("trait_offsets", {})}
                 store.pet["intimacy_daily_gained"] = 0.0
+
+                # 每日重置陪伴能量
+                from quota import QuotaManager
+                qm = QuotaManager.from_dict(store.pet.get("quota", {}))
+                qm.daily_reset()
+                store.pet["quota"] = qm.to_dict()
 
                 # Offset 回归 baseline
                 offsets = store.pet.get("trait_offsets", {})

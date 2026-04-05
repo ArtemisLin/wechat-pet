@@ -15,7 +15,7 @@ import os
 import threading
 from pathlib import Path
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 
 def _default_pet(species):
@@ -68,6 +68,13 @@ def _default_pet(species):
         "intimacy": 0.3,
         "intimacy_daily_gained": 0.0,
         "last_interaction_at": None,
+        # 额度系统（Phase 4）
+        "quota": {
+            "stars": 100,
+            "companion_energy": 100,
+            "initial_stars": 100,
+            "total_recharged": 0,
+        },
     }
 
 
@@ -148,6 +155,15 @@ class UserPetStore:
             self.pet.setdefault("intimacy", 0.3)
             self.pet.setdefault("intimacy_daily_gained", 0.0)
             self.pet.setdefault("last_interaction_at", None)
+            self._save()
+        # v5 → v6: 添加额度系统
+        if from_version < 6:
+            self.pet.setdefault("quota", {
+                "stars": 100,
+                "companion_energy": 100,
+                "initial_stars": 100,
+                "total_recharged": 0,
+            })
             self._save()
 
     def _save(self):
@@ -471,8 +487,20 @@ class UserPetStore:
                         self.pet["level"] = new_level
                         self.pet["stage"] = stage_id
                         self._save()
-                        # 触发成长解锁图生成
-                        self._async_gen_stage_images(stage_id)
+                        # 触发成长解锁图生成（检查星星额度）
+                        from quota import QuotaManager, COST_IMAGE_GEN
+                        from assets_manager import STAGE_UNLOCKS
+                        keys = STAGE_UNLOCKS.get(stage_id, [])
+                        if keys:
+                            qm = QuotaManager.from_dict(self.pet.get("quota", {}))
+                            cost = len(keys) * COST_IMAGE_GEN
+                            if qm.can_spend_stars(cost):
+                                qm.spend_stars(cost)
+                                self.pet["quota"] = qm.to_dict()
+                                self._save()
+                                self._async_gen_stage_images(stage_id)
+                            else:
+                                print(f"[quota] Not enough stars for stage {stage_id} images, using fallback")
                         return stage_id
             self._save()
             return None

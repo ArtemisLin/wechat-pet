@@ -764,6 +764,12 @@ def format_status(pet):
         days = (datetime.strptime(today, "%Y-%m-%d") - datetime.strptime(first_day, "%Y-%m-%d")).days + 1
         lines.append(f"\U0001f4c5 在一起 {days} 天")
 
+    # 额度信息（Phase 4）
+    from quota import QuotaManager
+    qm = QuotaManager.from_dict(pet.get("quota", {}))
+    lines.append("")
+    lines.append(qm.format_status())
+
     # 当前状态提示
     lines.append("─" * 18)
     if pet.get("is_sleeping"):
@@ -938,6 +944,10 @@ def _rule_route(text):
     for kw in ("收藏", "背包", "纪念品", "收集"):
         if kw in text:
             return {"action": "collection"}
+
+    for kw in ("充值", "买星星", "补充星星"):
+        if kw in text:
+            return {"action": "recharge"}
 
     for kw in ("看看", "状态", "你好吗", "你还好吗", "你饿吗"):
         if kw in text:
@@ -1205,8 +1215,18 @@ class MessageHandler:
         store.pet["trait_daily_used"] = {k: 0.0 for k in initial_traits}
         store._save()
 
-        # 触发异步生图（不阻塞用户）
-        self._async_gen_hatch_images(store.user_dir, species_id, initial_traits, user_id)
+        # 触发异步生图（不阻塞用户）— 检查星星额度
+        from quota import QuotaManager, COST_IMAGE_GEN
+        qm = QuotaManager.from_dict(store.pet.get("quota", {}))
+        hatch_images = ["base", "idle", "happy", "sleeping"]
+        total_cost = len(hatch_images) * COST_IMAGE_GEN
+        if qm.can_spend_stars(total_cost):
+            qm.spend_stars(total_cost)
+            store.pet["quota"] = qm.to_dict()
+            store._save()
+            self._async_gen_hatch_images(store.user_dir, species_id, initial_traits, user_id)
+        else:
+            print(f"[quota] Not enough stars for hatching images, using fallback")
 
         self._user_state[user_id] = "ask_owner_name"
 
@@ -1344,6 +1364,9 @@ class MessageHandler:
             if action == "collection":
                 return store.format_collection()
 
+            if action == "recharge":
+                return "想要更多星星吗？✨\n\n目前是内测阶段，请联系谷雨充值~\n💰 ¥2 = 100 星星\n💰 ¥5 = 280 星星\n💰 ¥10 = 600 星星"
+
             if action == "status":
                 # 根据综合状态选图
                 avg = sum(pet.get(s, 0) for s, _, _ in STAT_DISPLAY) / 5
@@ -1366,7 +1389,26 @@ class MessageHandler:
                 store._save()
                 return f"知道啦！以后叫你{owner_name}~ \u2764\ufe0f"
 
-        # AI 兜底（带对话记忆）
+        # AI 兜底（带对话记忆）— 额度检查
+        from quota import QuotaManager, DegradationLevel, COST_AI_CHAT
+        qm = QuotaManager.from_dict(pet.get("quota", {}))
+        level = qm.degradation_level()
+
+        if level == DegradationLevel.DEEP:
+            replies = [
+                f"{name}打了个哈欠... zzZ",
+                f"{name}迷迷糊糊地蹭了蹭你~",
+                f"今天有点困... 先陪你待着，等补充点星星再跟你好好聊~",
+            ]
+            return random.choice(replies)
+
+        if qm.can_spend_companion(COST_AI_CHAT):
+            qm.spend_companion(COST_AI_CHAT)
+            store.pet["quota"] = qm.to_dict()
+            store._save()
+        else:
+            return f"{name}有点累了，明天能量恢复了再聊吧~"
+
         try:
             from ai import parse_message
             # 计算在一起天数
@@ -1389,7 +1431,8 @@ class MessageHandler:
                 "traits": pet.get("traits", {}),
                 "intimacy": pet.get("intimacy", 0.3),
             }
-            result = parse_message(text, pet_context, history=store.chat_history, species_id=species_id)
+            result = parse_message(text, pet_context, history=store.chat_history,
+                                      species_id=species_id, degradation=level.value)
             if result and result.get("reply"):
                 reply_text = result["reply"]
                 store.chat_history.append({"role": "user", "content": text})
