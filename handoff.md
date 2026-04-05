@@ -64,9 +64,26 @@ V2 目标：从技术 demo 升级为有社交货币价值的产品。
 - 39 个测试全部通过
 - 已 commit (06bb4ef)
 
-### Phase 4 ⏳ 额度系统（待做）
+### Phase 4 ✅ 额度系统（commit 62fc6f3）
 
-计划文件: `docs/plans/2026-04-02-phase4-quota.md`
+**新增文件:**
+- `pet/quota.py` — 额度管理器（QuotaManager + DegradationLevel + 消耗常量）
+
+**修改文件:**
+- `pet/store.py` — schema v5→v6，`_default_pet` 加 quota 字段，迁移逻辑，成长生图加额度检查
+- `pet/core.py` — AI 对话前检查陪伴能量+降级，孵化生图检查星星，状态卡显示额度，"充值"命令
+- `pet/ai.py` — `parse_message` 新增 `degradation` 参数，轻度降级时 max_tokens 减半
+- `pet/scheduler.py` — 每日重置陪伴能量，闲聊降级控制，日记/周报消耗星星
+
+**关键设计:**
+- 双能量：陪伴能量（每日恢复100，聊天消耗）+ 创作星星（初始100，生图/日记/周报消耗）
+- 四级渐进降级：NORMAL → LIGHT（AI回复变短）→ MEDIUM（不生新图）→ DEEP（预制模板）
+- 消耗表：AI聊天1陪伴能量，生图10星星，日记1星星，周报2星星
+- 充值命令（V1手动转账）
+
+**当前状态:**
+- 50 个测试全部通过
+- 已 commit (62fc6f3)
 
 ### Phase 5 ⏳ 传播系统（待做）
 
@@ -83,12 +100,13 @@ V2 目标：从技术 demo 升级为有社交货币价值的产品。
 │   ├── penguin/              企鹅预制素材 (34张 PNG)
 │   ├── scenes/               场景背景（暂空）
 │   └── templates/            模板（暂空）
-├── tests/                    39 个测试
+├── tests/                    50 个测试
 │   ├── test_store.py         存储层 (11)
 │   ├── test_integration.py   集成 (9)
 │   ├── test_personality.py   性格引擎 (10)
 │   ├── test_species.py       品种 (5)
-│   └── test_image_gen.py     生图引擎 (4)
+│   ├── test_image_gen.py     生图引擎 (4)
+│   └── test_quota.py         额度系统 (11)
 └── pet/
     ├── config.py             配置（AI/生图API/宠物参数）
     ├── ilink.py              通信层（登录/轮询/发送/typing）
@@ -101,6 +119,7 @@ V2 目标：从技术 demo 升级为有社交货币价值的产品。
     ├── image_gen.py          即梦 AI 生图引擎
     ├── compositor.py         Pillow 三层合成器
     ├── assets_manager.py     素材管理器
+    ├── quota.py              额度系统（双能量+渐进降级）
     ├── image.py              AES 加密 + CDN 上传
     └── .env                  密钥（不提交）
 ```
@@ -117,7 +136,8 @@ data/{user_id}/
 
 pet.json 字段: name, species, stage, 5属性, xp, level,
 sleeping/exploring 状态, achievements, stats,
-traits, trait_offsets, trait_daily_used, intimacy, intimacy_daily_gained, last_interaction_at
+traits, trait_offsets, trait_daily_used, intimacy, intimacy_daily_gained, last_interaction_at,
+quota (stars, companion_energy, initial_stars, total_recharged)
 
 ## 启动
 
