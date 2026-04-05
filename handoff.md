@@ -1,6 +1,6 @@
 # WeChat Pet (017Pet) V2 — 交接文档
 
-> 最后更新: 2026-04-05
+> 最后更新: 2026-04-05 (Phase 1-5 全部完成)
 
 ## 项目概述
 
@@ -85,9 +85,26 @@ V2 目标：从技术 demo 升级为有社交货币价值的产品。
 - 50 个测试全部通过
 - 已 commit (62fc6f3)
 
-### Phase 5 ⏳ 传播系统（待做）
+### Phase 5 ✅ 传播系统（commit dcb3492）
 
-计划文件: `docs/plans/2026-04-02-phase5-sharing.md`
+**新增文件:**
+- `pet/highlights.py` — 高光时刻引擎（S/A/B 三级检测）
+- `pet/cards.py` — Pillow 卡片生成器（性格签卡/名片/成就卡/周报卡）
+- `pet/invite.py` — 邀请码系统（4位码，持久化到 invites.json）
+- `pet/h5.py` — 轻量成长册 H5 静态页生成器
+
+**修改文件:**
+- `pet/core.py` — 邀请码验证+领养流程、"名片"/"邀请码"命令、孵化时生成签卡和邀请码、邀请者奖励星星
+
+**关键设计:**
+- 高光分级：S 级（满月/成年礼/SSR）→ 卡片+分享提示，A 级 → 轻提醒，B 级 → 只记录
+- 邀请码：孵化完成赠送 1 个码，使用后邀请者得 10 星星
+- 名片卡：Pillow 生成 1024x600 横版名片，缓存到 images/
+- H5 成长册：base64 内嵌角色图的纯静态 HTML
+
+**当前状态:**
+- 58 个测试全部通过
+- 已 commit (dcb3492)
 
 ## 项目结构
 
@@ -100,13 +117,14 @@ V2 目标：从技术 demo 升级为有社交货币价值的产品。
 │   ├── penguin/              企鹅预制素材 (34张 PNG)
 │   ├── scenes/               场景背景（暂空）
 │   └── templates/            模板（暂空）
-├── tests/                    50 个测试
+├── tests/                    58 个测试
 │   ├── test_store.py         存储层 (11)
 │   ├── test_integration.py   集成 (9)
 │   ├── test_personality.py   性格引擎 (10)
 │   ├── test_species.py       品种 (5)
 │   ├── test_image_gen.py     生图引擎 (4)
-│   └── test_quota.py         额度系统 (11)
+│   ├── test_quota.py         额度系统 (11)
+│   └── test_invite.py        邀请码系统 (8)
 └── pet/
     ├── config.py             配置（AI/生图API/宠物参数）
     ├── ilink.py              通信层（登录/轮询/发送/typing）
@@ -120,6 +138,10 @@ V2 目标：从技术 demo 升级为有社交货币价值的产品。
     ├── compositor.py         Pillow 三层合成器
     ├── assets_manager.py     素材管理器
     ├── quota.py              额度系统（双能量+渐进降级）
+    ├── highlights.py         高光时刻引擎（S/A/B 分级）
+    ├── cards.py              Pillow 卡片生成器（4种模板）
+    ├── invite.py             邀请码系统（4位码）
+    ├── h5.py                 轻量成长册 H5 生成器
     ├── image.py              AES 加密 + CDN 上传
     └── .env                  密钥（不提交）
 ```
@@ -148,6 +170,7 @@ py -m pytest tests/ -v        # 跑测试
 
 ## 下一步
 
-1. 读 `docs/plans/2026-04-02-phase4-quota.md` 开始 Phase 4
-3. 然后 Phase 5
-4. 全部完成后合并 `phase1-multiuser` → `main`
+Phase 1-5 全部完成。下一步：
+1. 合并 `phase1-multiuser` → `main`
+2. 端到端真机测试（微信 iLink 环境）
+3. 根据使用反馈迭代优化
