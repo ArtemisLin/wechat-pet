@@ -892,6 +892,17 @@ def _is_question(text):
     return any(text.endswith(q) for q in question_endings)
 
 
+def _calc_days_together(pet):
+    """计算在一起天数。"""
+    stats = pet.get("stats", {})
+    if stats.get("active_dates"):
+        first_day = min(stats["active_dates"])
+        from datetime import datetime as _dt
+        today = now().strftime("%Y-%m-%d")
+        return (_dt.strptime(today, "%Y-%m-%d") - _dt.strptime(first_day, "%Y-%m-%d")).days + 1
+    return 0
+
+
 def _rule_route(text):
     """规则路由，返回 {action, ...} 或 None。使用关键词包含匹配。"""
     text = text.strip()
@@ -944,6 +955,14 @@ def _rule_route(text):
     for kw in ("收藏", "背包", "纪念品", "收集"):
         if kw in text:
             return {"action": "collection"}
+
+    for kw in ("邀请码", "邀请"):
+        if kw in text:
+            return {"action": "invite_code"}
+
+    for kw in ("名片", "我的卡片"):
+        if kw in text:
+            return {"action": "profile_card"}
 
     for kw in ("充值", "买星星", "补充星星"):
         if kw in text:
@@ -1056,6 +1075,36 @@ class MessageHandler:
         route = _rule_route(text)
         if route and route["action"] == "hatch":
             return self._start_hatch(user_id)
+
+        # 检查是否输入了邀请码（4位字母数字）
+        import re as _re
+        if _re.match(r'^[A-Za-z0-9]{4}$', text.strip()):
+            try:
+                store = self._get_store(user_id)
+                data_dir = os.path.dirname(store.user_dir)
+                from invite import InviteManager
+                mgr = InviteManager(data_dir)
+                code = text.strip().upper()
+                result = mgr.validate_code(code)
+                if result and not result.get("used_by"):
+                    mgr.use_code(code, user_id)
+                    # 给邀请者奖励星星
+                    if self._registry:
+                        inviter_id = result["inviter"]
+                        inviter_store = self._registry.get_or_create(inviter_id)
+                        if inviter_store.pet:
+                            from quota import QuotaManager
+                            qm = QuotaManager.from_dict(inviter_store.pet.get("quota", {}))
+                            qm.recharge_stars(10)
+                            inviter_store.pet["quota"] = qm.to_dict()
+                            inviter_store._save()
+                    # 进入领养流程
+                    return self._start_hatch(user_id)
+                elif result and result.get("used_by"):
+                    return "这个邀请码已经被使用啦~\n再找朋友要一个新的吧！"
+            except Exception as e:
+                print(f"[invite] Validation error: {e}")
+
         return "还没有宠物呢~ 发送「孵蛋」领养一只吧！"
 
     # 孵化塑形选项
@@ -1228,6 +1277,20 @@ class MessageHandler:
         else:
             print(f"[quota] Not enough stars for hatching images, using fallback")
 
+        # 生成性格签卡（异步，不阻塞）
+        self._async_gen_sign_card(store, species_id, initial_traits, name, spec)
+
+        # 孵化完成时赠送 1 个邀请码
+        try:
+            data_dir = os.path.dirname(store.user_dir)
+            from invite import InviteManager
+            mgr = InviteManager(data_dir)
+            invite_code = mgr.generate_code(user_id)
+            print(f"[invite] Generated code {invite_code} for {user_id[:15]}")
+        except Exception as e:
+            print(f"[invite] Code generation failed: {e}")
+            invite_code = None
+
         self._user_state[user_id] = "ask_owner_name"
 
         species_name = spec["name"]
@@ -1267,6 +1330,31 @@ class MessageHandler:
                         print(f"[image_gen] Failed {key}: {result.error}")
             except Exception as e:
                 print(f"[image_gen] Error: {e}")
+
+        threading.Thread(target=_gen, daemon=True).start()
+
+    def _async_gen_sign_card(self, store, species_id, traits, pet_name, spec):
+        """孵化完成后异步生成性格签卡。"""
+        import threading
+
+        def _gen():
+            try:
+                from cards import personality_sign_card, card_to_bytes
+                from assets_manager import resolve_image
+                from image_gen import save_cached_image
+
+                char_path = resolve_image(store.user_dir, species_id, "base")
+                trait_tags_str = _trait_tags(traits)
+                trait_desc = f"这是一只{trait_tags_str}的{spec['name']}，它的世界因为有你而变得特别。"
+                card = personality_sign_card(
+                    char_path, pet_name, spec["name"], spec["emoji"],
+                    trait_tags_str, trait_desc
+                )
+                card_bytes = card_to_bytes(card)
+                save_cached_image(store.user_dir, "sign_card", card_bytes)
+                print(f"[cards] Sign card generated for {store.user_id[:15]}")
+            except Exception as e:
+                print(f"[cards] Sign card generation failed: {e}")
 
         threading.Thread(target=_gen, daemon=True).start()
 
@@ -1363,6 +1451,37 @@ class MessageHandler:
 
             if action == "collection":
                 return store.format_collection()
+
+            if action == "invite_code":
+                from invite import InviteManager
+                data_dir = os.path.dirname(store.user_dir)
+                mgr = InviteManager(data_dir)
+                available = mgr.get_available_codes(user_id)
+                if available:
+                    codes_text = "\n".join([f"  📮 {c['code']}" for c in available])
+                    return f"你的邀请码：\n{codes_text}\n\n把邀请码分享给朋友，让他们也来领养一只宠物吧！"
+                else:
+                    return "你暂时没有可用的邀请码哦~\n继续养宠物，达成成就就能获得新的邀请码！"
+
+            if action == "profile_card":
+                from cards import pet_profile_card, card_to_bytes
+                from assets_manager import resolve_image
+                species_id = store.get_species_id() or "penguin"
+                char_path = resolve_image(store.user_dir, species_id, "base")
+                trait_tags_str = _trait_tags(pet.get("traits", {}))
+                days = _calc_days_together(pet)
+                from species import get_species as _gs
+                spec = _gs(species_id)
+                card = pet_profile_card(
+                    char_path, name, spec["name"] if spec else "宠物",
+                    spec["emoji"] if spec else "🐾",
+                    trait_tags_str, "", days
+                )
+                card_bytes = card_to_bytes(card)
+                # 保存卡片到缓存
+                from image_gen import save_cached_image
+                save_cached_image(store.user_dir, "profile_card", card_bytes)
+                return (f"这是{name}的名片~ ✨", "profile_card")
 
             if action == "recharge":
                 return "想要更多星星吗？✨\n\n目前是内测阶段，请联系谷雨充值~\n💰 ¥2 = 100 星星\n💰 ¥5 = 280 星星\n💰 ¥10 = 600 星星"
