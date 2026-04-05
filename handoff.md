@@ -33,7 +33,7 @@ V2 目标：从技术 demo 升级为有社交货币价值的产品。
 - 每日0:05 衰减回归 + 亲密度忽视惩罚
 - AI prompt 注入性格描述 + 亲密度行为指引
 
-### Phase 3 🔧 AI 生图 + 视觉合成（代码完成，API 已调通）
+### Phase 3 ✅ AI 生图 + 视觉合成（commit 06bb4ef）
 
 **新增文件:**
 - `pet/image_gen.py` — 即梦 API 生图引擎（volcengine SDK，req_key: jimeng_seedream46_cvtob）
@@ -62,7 +62,7 @@ V2 目标：从技术 demo 升级为有社交货币价值的产品。
 **当前状态:**
 - API 调通，生图效果已验证（Q版像素企鹅）
 - 39 个测试全部通过
-- 代码已写完但尚未 commit
+- 已 commit (06bb4ef)
 
 ### Phase 4 ⏳ 额度系统（待做）
 
@@ -128,7 +128,6 @@ py -m pytest tests/ -v        # 跑测试
 
 ## 下一步
 
-1. Commit Phase 3 的改动
-2. 读 `docs/plans/2026-04-02-phase4-quota.md` 开始 Phase 4
+1. 读 `docs/plans/2026-04-02-phase4-quota.md` 开始 Phase 4
 3. 然后 Phase 5
 4. 全部完成后合并 `phase1-multiuser` → `main`
